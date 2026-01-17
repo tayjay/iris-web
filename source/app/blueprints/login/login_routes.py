@@ -52,6 +52,7 @@ from app.iris_engine.utils.tracker import track_activity
 from app.models.cases import Cases
 from app.util import is_authentication_ldap, response_error
 from app.util import is_authentication_oidc
+from app.util import is_authentication_saml
 from app.datamgmt.manage.manage_users_db import get_active_user_by_login, get_user
 from app.datamgmt.manage.manage_users_db import create_user
 
@@ -143,7 +144,7 @@ def _authenticate_password(form, username, password):
 
 # CONTENT ------------------------------------------------
 # Authenticate user
-if app.config.get("AUTHENTICATION_TYPE") in ["local", "ldap", "oidc"]:
+if app.config.get("AUTHENTICATION_TYPE") in ["local", "ldap", "oidc", "saml"]:
     @login_blueprint.route('/login', methods=['GET', 'POST'])
     def login():
         #session.permanent = True
@@ -153,6 +154,9 @@ if app.config.get("AUTHENTICATION_TYPE") in ["local", "ldap", "oidc"]:
 
         if is_authentication_oidc() and app.config.get('AUTHENTICATION_LOCAL_FALLBACK') is False:
             return redirect(url_for('login.oidc_login'))
+
+        if is_authentication_saml() and app.config.get('AUTHENTICATION_LOCAL_FALLBACK') is False:
+            return redirect(url_for('login.saml_login'))
 
         form = LoginForm(request.form)
 
@@ -379,3 +383,121 @@ def mfa_verify():
             flash('Invalid token. Please try again.', 'danger')
 
     return render_template('mfa_verify.html', form=form)
+
+
+# SAML Authentication Routes
+if is_authentication_saml():
+    from flask import Response
+    from app.iris_engine.access_control.saml_handler import get_saml_auth, get_saml_metadata
+
+    @login_blueprint.route('/saml/login')
+    def saml_login():
+        """Initiate SP-initiated SSO - redirect to IdP"""
+        if current_user.is_authenticated:
+            return redirect(url_for('index.index'))
+
+        auth = get_saml_auth(request, app)
+
+        # Store the next URL in session for post-login redirect
+        next_url = request.args.get('next')
+        if next_url:
+            session['saml_next_url'] = next_url
+
+        return redirect(auth.login())
+
+    @login_blueprint.route('/saml/acs', methods=['POST'])
+    def saml_acs():
+        """Assertion Consumer Service - handle IdP response"""
+        auth = get_saml_auth(request, app)
+        auth.process_response()
+        errors = auth.get_errors()
+
+        if errors:
+            error_reason = auth.get_last_error_reason()
+            log.error(f"SAML ACS Error: {errors}, Reason: {error_reason}")
+            track_activity(
+                f"SAML authentication failed: {error_reason}",
+                ctx_less=True,
+                display_in_ui=False,
+            )
+            return render_template('saml_error.html', errors=errors, error_reason=error_reason), 400
+
+        if not auth.is_authenticated():
+            log.warning("SAML response received but user is not authenticated")
+            track_activity(
+                "SAML response received but user is not authenticated",
+                ctx_less=True,
+                display_in_ui=False,
+            )
+            return render_template('saml_error.html', errors=['User not authenticated'],
+                                   error_reason='The SAML response did not indicate successful authentication'), 401
+
+        # Extract user attributes from SAML response
+        attributes = auth.get_attributes()
+        name_id = auth.get_nameid()
+
+        # Get attribute mappings from config
+        username_attr = app.config.get('SAML_MAPPING_USERNAME', 'uid')
+        email_attr = app.config.get('SAML_MAPPING_EMAIL', 'email')
+        name_attr = app.config.get('SAML_MAPPING_NAME', 'displayName')
+
+        # Extract user info from attributes (attributes are lists)
+        user_login = attributes.get(username_attr, [name_id])[0] if attributes.get(username_attr) else name_id
+        user_email = attributes.get(email_attr, [f'{user_login}@saml'])[0] if attributes.get(email_attr) else f'{user_login}@saml'
+        user_name = attributes.get(name_attr, [user_login])[0] if attributes.get(name_attr) else user_login
+
+        log.info(f"SAML authentication successful for user: {user_login}")
+
+        # Look up or create user
+        user = get_user(user_login, 'user')
+
+        if not user:
+            log.warning(f"SAML user {user_login} not found in database")
+            if app.config.get("AUTHENTICATION_CREATE_USER_IF_NOT_EXIST") is False:
+                log.warning("Authentication is set to not create user if not exists")
+                track_activity(
+                    f"SAML user {user_login} not found in database",
+                    ctx_less=True,
+                    display_in_ui=False,
+                )
+                return response_error("User not found in IRIS", 404)
+
+            log.info(f"Creating SAML user {user_login} in database")
+            track_activity(
+                f"Creating SAML user {user_login} in database",
+                ctx_less=True,
+                display_in_ui=False,
+            )
+
+            # Generate random password (user won't use it since they authenticate via SAML)
+            password = ''.join(random.choices(string.printable[:-6], k=16))
+
+            user = create_user(
+                user_name=user_name,
+                user_login=user_login,
+                user_email=user_email,
+                user_password=bc.generate_password_hash(password.encode('utf8')).decode('utf8'),
+                user_active=True,
+                user_is_service_account=False
+            )
+
+        if user and not user.active:
+            return response_error("User not active in IRIS", 403)
+
+        # Get the stored next URL from session
+        next_url = session.pop('saml_next_url', None)
+        if next_url:
+            request.args = {'next': next_url}
+
+        # Login user, skipping MFA (like OIDC)
+        return wrap_login_user(user, is_oidc=True)
+
+    @login_blueprint.route('/saml/metadata')
+    def saml_metadata():
+        """Serve SP metadata XML for IdP configuration"""
+        try:
+            metadata = get_saml_metadata(app)
+            return Response(metadata, mimetype='application/xml')
+        except Exception as e:
+            log.error(f"Error generating SAML metadata: {e}")
+            return response_error(f"Error generating SAML metadata: {str(e)}", 500)

@@ -466,6 +466,7 @@ def not_authenticated_redirection_url(request_url: str):
         "local": lambda: url_for('login.login', next=request_url),
         "ldap": lambda: url_for('login.login', next=request_url),
         "oidc": lambda: url_for('login.login', next=request_url),
+        "saml": lambda: url_for('login.login', next=request_url),
     }
 
     return redirection_mapper.get(app.config.get("AUTHENTICATION_TYPE"))()
@@ -477,6 +478,7 @@ def is_user_authenticated(incoming_request: Request):
         "local": _local_authentication_process,
         "ldap": _local_authentication_process,
         "oidc": _local_authentication_process,
+        "saml": _local_authentication_process,
     }
 
     return authentication_mapper.get(app.config.get("AUTHENTICATION_TYPE"))(incoming_request)
@@ -492,6 +494,10 @@ def is_authentication_ldap():
 
 def is_authentication_oidc():
     return app.config.get('AUTHENTICATION_TYPE') == "oidc"
+
+
+def is_authentication_saml():
+    return app.config.get('AUTHENTICATION_TYPE') == "saml"
 
 
 def regenerate_session():

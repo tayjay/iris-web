@@ -473,6 +473,47 @@ class Config:
         OIDC_MAPPING_USERNAME = config.load('OIDC', 'MAPPING_USERNAME', fallback='preferred_username')
         OIDC_MAPPING_EMAIL = config.load('OIDC', 'MAPPING_EMAIL', fallback='email')
 
+    elif authentication_type == 'saml':
+        # IdP Configuration
+        SAML_IDP_ENTITY_ID = config.load('SAML', 'IDP_ENTITY_ID')
+        if SAML_IDP_ENTITY_ID is None:
+            raise Exception('SAML enabled and no IdP entity ID configured')
+
+        SAML_IDP_SSO_URL = config.load('SAML', 'IDP_SSO_URL')
+        if SAML_IDP_SSO_URL is None:
+            raise Exception('SAML enabled and no IdP SSO URL configured')
+
+        SAML_IDP_SLO_URL = config.load('SAML', 'IDP_SLO_URL', fallback=None)
+
+        SAML_IDP_X509_CERT = config.load('SAML', 'IDP_X509_CERT')
+        if SAML_IDP_X509_CERT is None:
+            raise Exception('SAML enabled and no IdP X509 certificate configured')
+
+        # SP Configuration
+        SAML_SP_ENTITY_ID = config.load('SAML', 'SP_ENTITY_ID')
+        if SAML_SP_ENTITY_ID is None:
+            raise Exception('SAML enabled and no SP entity ID configured')
+
+        SAML_SP_ACS_URL = config.load('SAML', 'SP_ACS_URL')
+        if SAML_SP_ACS_URL is None:
+            raise Exception('SAML enabled and no SP ACS URL configured')
+
+        # Optional SP signing certificate and key
+        SAML_SP_X509_CERT = config.load('SAML', 'SP_X509_CERT', fallback=None)
+        SAML_SP_PRIVATE_KEY = config.load('SAML', 'SP_PRIVATE_KEY', fallback=None)
+
+        # Security settings
+        SAML_WANT_ASSERTIONS_SIGNED = config.load('SAML', 'WANT_ASSERTIONS_SIGNED', fallback='True')
+        SAML_WANT_ASSERTIONS_SIGNED = (SAML_WANT_ASSERTIONS_SIGNED == 'True')
+
+        SAML_WANT_RESPONSE_SIGNED = config.load('SAML', 'WANT_RESPONSE_SIGNED', fallback='True')
+        SAML_WANT_RESPONSE_SIGNED = (SAML_WANT_RESPONSE_SIGNED == 'True')
+
+        # Attribute mappings
+        SAML_MAPPING_USERNAME = config.load('SAML', 'MAPPING_USERNAME', fallback='uid')
+        SAML_MAPPING_EMAIL = config.load('SAML', 'MAPPING_EMAIL', fallback='email')
+        SAML_MAPPING_NAME = config.load('SAML', 'MAPPING_NAME', fallback='displayName')
+
     """ Caching 
     """
     CACHE_TYPE = "SimpleCache"

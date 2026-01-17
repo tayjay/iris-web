@@ -46,6 +46,9 @@
                         {% if auth_type == 'oidc' %}
                         <a href="/oidc-login" class="btn float-right btn-light login__submit_button">Use SSO</a>
                         {% endif %}
+                        {% if auth_type == 'saml' %}
+                        <a href="/saml/login" class="btn float-right btn-light login__submit_button">Use SSO</a>
+                        {% endif %}
                     </div>
                 </div>
             </form>
