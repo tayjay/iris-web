@@ -156,6 +156,75 @@ class TestsRestAlerts(TestCase):
         # TODO should be 201
         self.assertEqual(200, response.status_code)
 
+    def test_batch_escalate_should_correlate_matching_iocs_into_a_single_case_ioc(self):
+        ioc_value = '203.0.113.10'
+        asset_name = 'shared-account'
+
+        alert_body = {
+            'alert_severity_id': 4,
+            'alert_status_id': 3,
+            'alert_customer_id': 1,
+            'alert_assets': [{
+                'asset_name': asset_name,
+                'asset_description': 'Shared account asset',
+                'asset_type_id': 1,
+                'asset_ip': '203.0.113.10',
+                'asset_domain': '',
+                'asset_tags': 'shared'
+            }],
+            'alert_iocs': [{
+                'ioc_value': ioc_value,
+                'ioc_description': 'Shared IOC across alerts',
+                'ioc_tlp_id': 1,
+                'ioc_type_id': 1,
+                'ioc_tags': 'shared'
+            }]
+        }
+
+        first_alert = self._subject.create('/api/v2/alerts', {
+            **alert_body,
+            'alert_title': 'First alert'
+        }).json()
+        second_alert = self._subject.create('/api/v2/alerts', {
+            **alert_body,
+            'alert_title': 'Second alert'
+        }).json()
+
+        response = self._subject.create('/alerts/batch/escalate', {
+            'alert_ids': f"{first_alert['alert_id']},{second_alert['alert_id']}",
+            'iocs_import_list': [first_alert['iocs'][0]['ioc_uuid'], second_alert['iocs'][0]['ioc_uuid']],
+            'assets_import_list': [first_alert['assets'][0]['asset_uuid'], second_alert['assets'][0]['asset_uuid']],
+            'note': 'Regression coverage for shared IOC correlation',
+            'import_as_event': True,
+            'case_tags': 'batch-escalation',
+            'case_title': 'Batch escalation regression case'
+        })
+
+        self.assertEqual(200, response.status_code)
+
+        case_identifier = response.json()['data']['case_id']
+
+        case_iocs = self._subject.get(f'/api/v2/cases/{case_identifier}/iocs').json()
+        self.assertEqual(1, case_iocs['total'])
+
+        case_assets = self._subject.get(f'/api/v2/cases/{case_identifier}/assets').json()
+        self.assertEqual(1, case_assets['total'])
+
+        timeline = self._subject.get('/case/timeline/events/list', query_parameters={'cid': case_identifier}).json()['data']['timeline']
+        self.assertEqual(2, len(timeline))
+
+        event_ioc_ids = set()
+        event_asset_ids = set()
+        for event in timeline:
+            event_data = self._subject.get(f"/api/v2/cases/{case_identifier}/events/{event['event_id']}").json()
+            self.assertEqual(1, len(event_data['event_iocs']))
+            self.assertEqual(1, len(event_data['event_assets']))
+            event_ioc_ids.add(event_data['event_iocs'][0])
+            event_asset_ids.add(event_data['event_assets'][0])
+
+        self.assertEqual(1, len(event_ioc_ids))
+        self.assertEqual(1, len(event_asset_ids))
+
     def test_create_customer_should_return_400_when_user_has_customer_alert_right(self):
         group_identifier = self._subject.create_dummy_group([IRIS_PERMISSION_ALERTS_WRITE])
         user = self._subject.create_dummy_user()

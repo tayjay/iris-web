@@ -304,6 +304,105 @@ def get_unspecified_event_category():
     return event_cat
 
 
+def _alerts_get_matching_case_ioc(case_id: int, alert_ioc: Ioc) -> Optional[Ioc]:
+    return Ioc.query.filter(
+        Ioc.case_id == case_id,
+        Ioc.ioc_value == alert_ioc.ioc_value,
+        Ioc.ioc_type_id == alert_ioc.ioc_type_id
+    ).first()
+
+
+def _alerts_import_alert_ioc_to_case(alert_ioc: Ioc, case_id: int, ioc_uuid: str) -> Ioc:
+    case_ioc = _alerts_get_matching_case_ioc(case_id, alert_ioc)
+    if case_ioc:
+        return case_ioc
+
+    if alert_ioc.case_id is not None and alert_ioc.case_id != case_id:
+        # Create a detached copy so the original IOC keeps its current case linkage.
+        new_alert_ioc = deepcopy(alert_ioc)
+        make_transient(new_alert_ioc)
+
+        new_alert_ioc.ioc_id = None
+        new_alert_ioc.ioc_uuid = ioc_uuid
+        new_alert_ioc.user_id = iris_current_user.id
+        new_alert_ioc.case_id = case_id
+
+        db_create(new_alert_ioc)
+        alert_ioc = new_alert_ioc
+
+    add_ioc(alert_ioc, iris_current_user.id, case_id)
+    return alert_ioc
+
+
+def _alerts_add_selected_iocs_to_case(alert: Alert, case_id: int, iocs_list: List[str]) -> List[int]:
+    ioc_links = []
+
+    for ioc_uuid in iocs_list or []:
+        for alert_ioc in alert.iocs:
+            if str(alert_ioc.ioc_uuid) != ioc_uuid:
+                continue
+
+            case_ioc = _alerts_import_alert_ioc_to_case(alert_ioc, case_id, ioc_uuid)
+            if case_ioc.ioc_id not in ioc_links:
+                ioc_links.append(case_ioc.ioc_id)
+
+    return ioc_links
+
+
+def _alerts_get_matching_case_asset(case_id: int, alert_asset: CaseAssets) -> Optional[CaseAssets]:
+    return CaseAssets.query.filter(and_(
+        CaseAssets.asset_name == alert_asset.asset_name,
+        CaseAssets.asset_type_id == alert_asset.asset_type_id,
+        CaseAssets.case_id == case_id
+    )).first()
+
+
+def _alerts_import_alert_asset_to_case(alert_asset: CaseAssets, case_id: int,
+                                       asset_uuid: str, ioc_links: List[int]) -> CaseAssets:
+    alert_asset.analysis_status_id = get_unspecified_analysis_status_id()
+
+    case_asset = _alerts_get_matching_case_asset(case_id, alert_asset)
+    if case_asset:
+        return case_asset
+
+    if alert_asset.case_id is not None and alert_asset.case_id != case_id:
+        # Create a detached copy so the original asset keeps its current case linkage.
+        new_alert_asset = deepcopy(alert_asset)
+        make_transient(new_alert_asset)
+
+        new_alert_asset.asset_id = None
+        new_alert_asset.asset_uuid = asset_uuid
+
+        db_create(new_alert_asset)
+        alert_asset = new_alert_asset
+
+    case_asset = create_asset(
+        asset=alert_asset,
+        caseid=case_id,
+        user_id=iris_current_user.id
+    )
+    case_asset.asset_uuid = alert_asset.asset_uuid
+
+    set_ioc_links(ioc_links, case_asset.asset_id)
+    return case_asset
+
+
+def _alerts_add_selected_assets_to_case(alert: Alert, case_id: int,
+                                        assets_list: List[str], ioc_links: List[int]) -> List[int]:
+    asset_links = []
+
+    for asset_uuid in assets_list or []:
+        for alert_asset in alert.assets:
+            if str(alert_asset.asset_uuid) != asset_uuid:
+                continue
+
+            case_asset = _alerts_import_alert_asset_to_case(alert_asset, case_id, asset_uuid, ioc_links)
+            if case_asset.asset_id not in asset_links:
+                asset_links.append(case_asset.asset_id)
+
+    return asset_links
+
+
 def create_case_from_alerts(alerts: List[Alert], iocs_list: List[str], assets_list: List[str], case_title: str,
                             note: str, import_as_event: bool, case_tags: str, template_id: int) -> Cases:
     """
@@ -326,6 +425,8 @@ def create_case_from_alerts(alerts: List[Alert], iocs_list: List[str], assets_li
     escalation_note = ""
     if note:
         escalation_note = f"\n\n### Escalation note\n\n{note}\n\n"
+
+    case_template_title_prefix = ""
 
     if template_id is not None and template_id != 0 and template_id != '':
         case_template = get_case_template_by_id(template_id)
@@ -360,31 +461,8 @@ def create_case_from_alerts(alerts: List[Alert], iocs_list: List[str], assets_li
     for alert in alerts:
         alert.cases.append(case)
 
-        ioc_links = []
-        asset_links = []
-
-        # Add the IOCs to the case
-        for ioc_uuid in iocs_list:
-            for alert_ioc in alert.iocs:
-                if str(alert_ioc.ioc_uuid) == ioc_uuid:
-
-                    add_ioc(alert_ioc, iris_current_user.id, case.case_id)
-                    ioc_links.append(alert_ioc.ioc_id)
-
-        # Add the assets to the case
-        for asset_uuid in assets_list:
-            for alert_asset in alert.assets:
-                if str(alert_asset.asset_uuid) == asset_uuid:
-                    alert_asset.analysis_status_id = get_unspecified_analysis_status_id()
-
-                    asset = create_asset(asset=alert_asset,
-                                         caseid=case.case_id,
-                                         user_id=iris_current_user.id
-                                         )
-                    asset.asset_uuid = alert_asset.asset_uuid
-
-                    set_ioc_links(ioc_links, asset.asset_id)
-                    asset_links.append(asset.asset_id)
+        ioc_links = _alerts_add_selected_iocs_to_case(alert, case.case_id, iocs_list)
+        asset_links = _alerts_add_selected_assets_to_case(alert, case.case_id, assets_list, ioc_links)
 
         # Add event to timeline
         if import_as_event:
@@ -486,71 +564,8 @@ def create_case_from_alert(alert: Alert, iocs_list: List[str], assets_list: List
     # Link the alert to the case
     alert.cases.append(case)
 
-    ioc_links = []
-    asset_links = []
-
-    # Add the IOCs to the case
-    for ioc_uuid in iocs_list:
-        for alert_ioc in alert.iocs:
-            if str(alert_ioc.ioc_uuid) == ioc_uuid:
-
-                # Make sure we don't have an existing IOC already
-                tmp_ioc = Ioc.query.filter(
-                    Ioc.case_id == case.case_id,
-                    Ioc.ioc_value == alert_ioc.ioc_value,
-                    Ioc.ioc_type_id == alert_ioc.ioc_type_id
-                ).first()
-
-                if tmp_ioc:
-                    # Skip as we already have it in the case
-                    ioc_links.append(tmp_ioc.ioc_id)
-                    continue
-
-                if alert_ioc.case_id is not None:
-                    # Make a deep copy of the ioc
-                    # prevent the ioc to conflict with the existing ioc
-                    new_alert_ioc = deepcopy(alert_ioc)
-                    make_transient(new_alert_ioc)
-
-                    new_alert_ioc.ioc_id = None
-                    new_alert_ioc.ioc_uuid = ioc_uuid
-                    new_alert_ioc.user_id = iris_current_user.id
-                    new_alert_ioc.case_id = case.case_id
-
-                    db_create(new_alert_ioc)
-
-                    alert_ioc = new_alert_ioc
-
-                add_ioc(alert_ioc, iris_current_user.id, case.case_id)
-                ioc_links.append(alert_ioc.ioc_id)
-
-    # Add the assets to the case
-    for asset_uuid in assets_list:
-        for alert_asset in alert.assets:
-            if str(alert_asset.asset_uuid) == asset_uuid:
-                alert_asset.analysis_status_id = get_unspecified_analysis_status_id()
-
-                if alert_asset.case_id is not None:
-                    # Make a deep copy of the asset
-                    # prevent the asset to conflict with the existing asset
-                    new_alert_asset = deepcopy(alert_asset)
-                    make_transient(new_alert_asset)
-
-                    new_alert_asset.asset_id = None
-                    new_alert_asset.asset_uuid = asset_uuid
-
-                    db_create(new_alert_asset)
-
-                    alert_asset = new_alert_asset
-
-                asset = create_asset(asset=alert_asset,
-                                     caseid=case.case_id,
-                                     user_id=iris_current_user.id
-                                     )
-                asset.asset_uuid = alert_asset.asset_uuid
-
-                set_ioc_links(ioc_links, asset.asset_id)
-                asset_links.append(asset.asset_id)
+    ioc_links = _alerts_add_selected_iocs_to_case(alert, case.case_id, iocs_list)
+    asset_links = _alerts_add_selected_assets_to_case(alert, case.case_id, assets_list, ioc_links)
 
     # Add event to timeline
     if import_as_event:
@@ -627,52 +642,8 @@ def merge_alert_in_case(alert: Alert, case: Cases, iocs_list: List[str],
     # Link the alert to the case
     alert.cases.append(case)
 
-    ioc_links = []
-    asset_links = []
-
-    # Add the IOCs to the case
-    for ioc_uuid in iocs_list:
-        for alert_ioc in alert.iocs:
-            if str(alert_ioc.ioc_uuid) == ioc_uuid:
-
-                tmp_ioc = Ioc.query.filter(
-                    Ioc.case_id == case.case_id,
-                    Ioc.ioc_value == alert_ioc.ioc_value,
-                    Ioc.ioc_type_id == alert_ioc.ioc_type_id
-                ).first()
-
-                if tmp_ioc:
-                    alert_ioc = tmp_ioc
-
-                add_ioc(alert_ioc, iris_current_user.id, case.case_id)
-                ioc_links.append(alert_ioc.ioc_id)
-
-    # Add the assets to the case
-    for asset_uuid in assets_list:
-        for alert_asset in alert.assets:
-            # Filter selected assets by the user
-            if str(alert_asset.asset_uuid) == asset_uuid:
-
-                alert_asset.analysis_status_id = get_unspecified_analysis_status_id()
-
-                # Check if the asset exists already in the case
-                tmp_asset = CaseAssets.query.filter(and_(
-                    CaseAssets.asset_name == alert_asset.asset_name,
-                    CaseAssets.asset_type_id == alert_asset.asset_type_id,
-                    CaseAssets.case_id == case.case_id
-                )).first()
-
-                if tmp_asset:
-                    asset = tmp_asset
-                else:
-                    asset = create_asset(asset=alert_asset,
-                                         caseid=case.case_id,
-                                         user_id=iris_current_user.id
-                                         )
-
-                    set_ioc_links(ioc_links, asset.asset_id)
-
-                asset_links.append(asset.asset_id)
+    ioc_links = _alerts_add_selected_iocs_to_case(alert, case.case_id, iocs_list)
+    asset_links = _alerts_add_selected_assets_to_case(alert, case.case_id, assets_list, ioc_links)
 
     # Add event to timeline
     if import_as_event:
