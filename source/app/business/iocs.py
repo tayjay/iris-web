@@ -116,6 +116,7 @@ def iocs_build_filter_query(ioc_id: int = None,
                             ioc_type_id: int = None,
                             ioc_description: str = None,
                             ioc_tlp_id: int = None,
+                            ioc_pap_id: int = None,
                             ioc_tags: str = None,
                             ioc_misp: str = None,
                             user_id: float = None):
@@ -135,6 +136,8 @@ def iocs_build_filter_query(ioc_id: int = None,
         conditions.append(Ioc.ioc_description == ioc_description)
     if ioc_tlp_id is not None:
         conditions.append(Ioc.ioc_tlp_id == ioc_tlp_id)
+    if ioc_pap_id is not None:
+        conditions.append(Ioc.ioc_pap_id == ioc_pap_id)
     if ioc_tags is not None:
         conditions.append(Ioc.ioc_tags == ioc_tags)
     if ioc_misp is not None:

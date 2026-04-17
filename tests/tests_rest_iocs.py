@@ -232,3 +232,27 @@ class TestsRestIocs(TestCase):
         self._subject.create(f'/api/v2/cases/{case_identifier}/iocs', body)
         response = user.get(f'/api/v2/cases/{case_identifier}/iocs')
         self.assertEqual(403, response.status_code)
+
+    def test_create_ioc_with_pap_should_return_correct_pap_id(self):
+        case_identifier = self._subject.create_dummy_case()
+        pap_identifier = 1
+        body = {'ioc_type_id': 1, 'ioc_tlp_id': 2, 'ioc_pap_id': pap_identifier, 'ioc_value': '8.8.8.8', 'ioc_description': 'test pap', 'ioc_tags': ''}
+        response = self._subject.create(f'/api/v2/cases/{case_identifier}/iocs', body).json()
+        self.assertEqual(pap_identifier, response['ioc_pap_id'])
+
+    def test_get_iocs_should_include_pap_information(self):
+        case_identifier = self._subject.create_dummy_case()
+        pap_identifier = 2
+        body = {'ioc_type_id': 1, 'ioc_tlp_id': 2, 'ioc_pap_id': pap_identifier, 'ioc_value': '8.8.8.8', 'ioc_description': 'test pap', 'ioc_tags': ''}
+        self._subject.create(f'/api/v2/cases/{case_identifier}/iocs', body).json()
+        response = self._subject.get(f'/api/v2/cases/{case_identifier}/iocs').json()
+        self.assertEqual(pap_identifier, response['data'][0]['pap']['pap_id'])
+
+    def test_update_ioc_should_update_pap(self):
+        case_identifier = self._subject.create_dummy_case()
+        body = {'ioc_type_id': 1, 'ioc_tlp_id': 2, 'ioc_pap_id': 1, 'ioc_value': '8.8.8.8', 'ioc_description': 'test', 'ioc_tags': ''}
+        response = self._subject.create(f'/api/v2/cases/{case_identifier}/iocs', body).json()
+        ioc_identifier = response['ioc_id']
+        new_pap = 3
+        response = self._subject.update(f'/api/v2/cases/{case_identifier}/iocs/{ioc_identifier}', {'ioc_pap_id': new_pap}).json()
+        self.assertEqual(new_pap, response['ioc_pap_id'])

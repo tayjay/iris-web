@@ -115,14 +115,14 @@
         <div class="modal-body">
             <div class="form-group">
                 <label for="ioc_format" class="placeholder">Expected CSV File format</label>
-                <textarea class="form-control col-md-12 col-sm-12 sizable-textarea" rows="2" disabled>ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp
-&lt;Value&gt;,&lt;Type&gt;,&lt;Description&gt;,&lt;TLP&gt;,Tags separated with &quot;|&quot;</textarea>
+                <textarea class="form-control col-md-12 col-sm-12 sizable-textarea" rows="2" disabled>ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp,ioc_pap
+&lt;Value&gt;,&lt;Type&gt;,&lt;Description&gt;,Tags separated with &quot;|&quot;,&lt;TLP&gt;,&lt;PAP&gt;</textarea>
             </div>
             <div class="form-group">
                 <label class="placeholder">CSV File format example</label>
-                <textarea class="form-control col-md-12 col-sm-12 sizable-textarea" rows="3" disabled>ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp
-1.1.1.1,IP,Cloudfare DNS IP address,Cloudfare|DNS,green
-wannacry.exe,File,Wannacry sample found,Wannacry|Malware|PE,amber</textarea>
+                <textarea class="form-control col-md-12 col-sm-12 sizable-textarea" rows="3" disabled>ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp,ioc_pap
+1.1.1.1,IP,Cloudfare DNS IP address,Cloudfare|DNS,green,green
+wannacry.exe,File,Wannacry sample found,Wannacry|Malware|PE,amber,red</textarea>
             </div>
               <div class="form-group">
                   <label class="placeholder">Choose CSV file to import : </label>

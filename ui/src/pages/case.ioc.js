@@ -320,9 +320,9 @@ function upload_ioc() {
 }
 
 function generate_sample_csv(){
-    csv_data = "ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp\n"
-    csv_data += "1.1.1.1,ip-dst,Cloudflare DNS IP address,Cloudflare|DNS,green\n"
-    csv_data += "wannacry.exe,filename,Wannacry sample found,Wannacry|Malware|PE,amber"
+    csv_data = "ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp,ioc_pap\n"
+    csv_data += "1.1.1.1,ip-dst,Cloudflare DNS IP address,Cloudflare|DNS,green,green\n"
+    csv_data += "wannacry.exe,filename,Wannacry sample found,Wannacry|Malware|PE,amber,red"
     download_file("sample_iocs.csv", "text/csv", csv_data);
 }
 
@@ -417,6 +417,21 @@ $(document).ready(function(){
                       bscolor = data.tlp_bscolor;
                       data = sanitizeHTML(data.tlp_name);
                       data = '<span class="badge badge-' + bscolor + ' ml-2">tlp:' + data + '</span>';
+                  } else {
+                      data = '<span class="badge badge-light ml-2">Unspecified</span>';
+                  }
+              }
+              return data;
+            }
+          },
+          {
+            "data": "pap",
+            "render": function(data, type, row, meta) {
+               if (type === 'display') {
+                  if (data) {
+                      bscolor = data.pap_bscolor;
+                      data = sanitizeHTML(data.pap_name);
+                      data = '<span class="badge badge-' + bscolor + ' ml-2">pap:' + data + '</span>';
                   } else {
                       data = '<span class="badge badge-light ml-2">Unspecified</span>';
                   }

@@ -313,7 +313,8 @@ def get_linked_iocs_finfo_from_asset(asset_id):
         Ioc.ioc_type_id,
         IocType.type_name,
         Ioc.ioc_description,
-        Ioc.ioc_tlp_id
+        Ioc.ioc_tlp_id,
+        Ioc.ioc_pap_id
     ).filter(and_(
         IocAssetLink.asset_id == asset_id,
         IocAssetLink.ioc_id == Ioc.ioc_id

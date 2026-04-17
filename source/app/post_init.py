@@ -73,6 +73,7 @@ from app.models.models import ReportType
 from app.models.models import ServerSettings
 from app.models.models import TaskStatus
 from app.models.iocs import Tlp
+from app.models.iocs import Pap
 from app.datamgmt.db_operations import create_safe
 from app.models.models import create_safe_attr
 from app.business.asset_types import create_asset_type_if_not_exists
@@ -979,6 +980,13 @@ def create_safe_tlp():
     create_safe(db.session, Tlp, tlp_name="amber+strict", tlp_bscolor="warning")
 
 
+def create_safe_pap():
+    create_safe(db.session, Pap, pap_name="red", pap_bscolor="danger")
+    create_safe(db.session, Pap, pap_name="amber", pap_bscolor="warning")
+    create_safe(db.session, Pap, pap_name="green", pap_bscolor="success")
+    create_safe(db.session, Pap, pap_name="white", pap_bscolor="black")
+
+
 def create_safe_server_settings(is_mfa_enabled):
     if not ServerSettings.query.count():
         create_safe(db.session, ServerSettings,
@@ -1303,6 +1311,9 @@ class PostInit:
 
                 self._logger.info("Creating base TLP")
                 create_safe_tlp()
+
+                self._logger.info("Creating base PAP")
+                create_safe_pap()
 
                 self._logger.info("Creating base events categories")
                 create_safe_events_cats()

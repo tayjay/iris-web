@@ -1109,3 +1109,47 @@ class TestsGraphQL(TestCase):
         for case in body['data']['cases']['edges']:
             test = case['node']['caseId']
             self.assertEqual(test, case_id)
+
+    def test_graphql_create_ioc_with_pap_should_return_pap_id(self):
+        case_identifier = self._create_case()
+        payload = {'query': f'mutation {{ iocCreate(caseId: {case_identifier}, typeId: 1, tlpId: 1, papId: 2, value: "test_pap") {{ ioc {{ iocPapId }} }} }}'}
+        response = self._subject.execute_graphql_query(payload)
+        self.assertEqual(2, response['data']['iocCreate']['ioc']['iocPapId'])
+
+    def test_graphql_update_ioc_should_update_pap(self):
+        case_identifier = self._create_case()
+        ioc_value = 'IOC pap value'
+        payload = {
+            'query': f'''mutation {{
+                             iocCreate(caseId: {case_identifier}, typeId: 1, tlpId: 1, papId: 1, value: "{ioc_value}") {{
+                                ioc {{ iocId }}
+                            }}
+                         }}'''
+        }
+        response = self._subject.execute_graphql_query(payload)
+        ioc_identifier = response['data']['iocCreate']['ioc']['iocId']
+        payload = {
+            'query': f'''mutation {{
+                             iocUpdate(iocId: {ioc_identifier}, typeId: 1, tlpId: 2, papId: 3, value: "{ioc_value}") {{
+                                 ioc {{ iocPapId }}
+                             }}
+                         }}'''
+        }
+        response = self._subject.execute_graphql_query(payload)
+        self.assertEqual(3, response['data']['iocUpdate']['ioc']['iocPapId'])
+
+    def test_graphql_iocs_filter_iocPapId_should_not_fail(self):
+        case_identifier = self._create_case()
+        payload = {'query': f'mutation {{ iocCreate(caseId: {case_identifier}, typeId: 1, tlpId: 1, papId: 2, value: "test_pap_filter") {{ ioc {{ iocPapId }} }} }}'}
+        response = self._subject.execute_graphql_query(payload)
+        ioc_pap_id = response['data']['iocCreate']['ioc']['iocPapId']
+        payload = {
+            'query': f'''{{
+                             case(caseId: {case_identifier}) {{
+                                 iocs(iocPapId: {ioc_pap_id}) {{ edges {{ node {{ iocPapId }} }} }} }}
+                         }}'''
+        }
+        body = self._subject.execute_graphql_query(payload)
+        for ioc in body['data']['case']['iocs']['edges']:
+            test_pap_id = ioc['node']['iocPapId']
+            self.assertEqual(test_pap_id, ioc_pap_id)

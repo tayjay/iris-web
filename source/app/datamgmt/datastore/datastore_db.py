@@ -33,6 +33,7 @@ from app.models.models import DataStoreFile
 from app.models.models import DataStorePath
 from app.models.iocs import Ioc
 from app.models.models import IocType
+from app.models.iocs import Pap
 from app.models.iocs import Tlp
 
 
@@ -354,12 +355,17 @@ def datastore_add_file_as_ioc(user_identifier, dsf):
         Tlp.tlp_name == 'amber'
     ).first()
 
+    ioc_pap_id = Pap.query.filter(
+        Pap.pap_name == 'amber'
+    ).first()
+
     if ioc is None:
         ioc = Ioc()
         ioc.ioc_value = dsf.file_sha256
         ioc.ioc_description = f'SHA256 of {dsf.file_original_name}. Imported from datastore.'
         ioc.ioc_type_id = ioc_type_id.type_id
         ioc.ioc_tlp_id = ioc_tlp_id.tlp_id
+        ioc.ioc_pap_id = ioc_pap_id.pap_id if ioc_pap_id else None
         ioc.ioc_tags = 'datastore'
         ioc.user_id = user_identifier
 

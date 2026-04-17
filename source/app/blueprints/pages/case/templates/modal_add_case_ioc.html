@@ -43,15 +43,20 @@
                         <div class="col-md-12 col-lg-12 col-sm-12">
                             {{ form.hidden_tag() }}
                             <div class="form-group row">
-                                <div class="col-6">
+                                <div class="col-4">
                                     <label for="ioc_type" class="mr-4">Type *
                                     </label>
-                                    {{ form.ioc_type_id(class="selectpicker pl--6 col-10") }}
+                                    {{ form.ioc_type_id(class="selectpicker pl--6 col-10") }}
                                 </div>
-                                <div class="col-6">
+                                <div class="col-4">
                                     <label for="ioc_tlp" class="mr-4">TLP *
                                     </label>
-                                    {{ form.ioc_tlp_id(class="selectpicker pl--6 col-10") }}
+                                    {{ form.ioc_tlp_id(class="selectpicker pl--6 col-10") }}
+                                </div>
+                                <div class="col-4">
+                                    <label for="ioc_pap" class="mr-4">PAP
+                                    </label>
+                                    {{ form.ioc_pap_id(class="selectpicker pl--6 col-10") }}
                                 </div>
                             </div>
                             <div class="form-group">
@@ -138,9 +143,16 @@
         style: "btn-outline-white",
     });
 
+    $('#ioc_pap_id').selectpicker({
+        liveSearch: true,
+        title: "None",
+        style: "btn-outline-white",
+    });
+
     {% if ioc.ioc_id %}
         $('#ioc_type_id').selectpicker('val', '{{ioc.ioc_type_id}}');
         $('#ioc_tlp_id').selectpicker('val', '{{ioc.ioc_tlp_id}}');
+        $('#ioc_pap_id').selectpicker('val', '{{ioc.ioc_pap_id}}');
     {% else %}
         $('#ioc_tlp_id').selectpicker('val', '2');
     {% endif %}

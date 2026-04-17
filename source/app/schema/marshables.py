@@ -78,6 +78,7 @@ from app.models.models import NotesGroup
 from app.models.models import ServerSettings
 from app.models.models import TaskStatus
 from app.models.iocs import Tlp
+from app.models.iocs import Pap
 from app.models.alerts import Alert
 from app.models.alerts import Severity
 from app.models.alerts import AlertStatus
@@ -922,6 +923,14 @@ class TlpSchema(ma.SQLAlchemyAutoSchema):
         unknown = EXCLUDE
 
 
+class PapSchema(ma.SQLAlchemyAutoSchema):
+    class Meta:
+        model = Pap
+        load_instance = True
+        include_fk = True
+        unknown = EXCLUDE
+
+
 # TODO try to remove IocSchema and replace it by this new schema
 class IocSchemaForAPIV2(ma.SQLAlchemyAutoSchema):
     """Schema for serializing and deserializing IOC objects.
@@ -935,6 +944,7 @@ class IocSchemaForAPIV2(ma.SQLAlchemyAutoSchema):
     ioc_enrichment: Optional[Dict[str, Any]] = auto_field('ioc_enrichment', required=False)
     ioc_type: Optional[IocTypeSchema] = ma.Nested(IocTypeSchema, required=False)
     tlp = ma.Nested(TlpSchema)
+    pap = ma.Nested(PapSchema)
 
     def get_link(self, ioc):
         user_search_limitations = ac_get_fast_user_cases_access(iris_current_user.id)
@@ -987,6 +997,12 @@ class IocSchemaForAPIV2(ma.SQLAlchemyAutoSchema):
                             max_val=POSTGRES_INT_MAX)
 
             Tlp.query.filter(Tlp.tlp_id == data.get('ioc_tlp_id')).count()
+
+        if data.get('ioc_pap_id'):
+            assert_type_mml(input_var=data.get('ioc_pap_id'), field_name="ioc_pap_id", type=int,
+                            max_val=POSTGRES_INT_MAX)
+
+            Pap.query.filter(Pap.pap_id == data.get('ioc_pap_id')).count()
 
         if data.get('ioc_tags'):
             for tag in data.get('ioc_tags').split(','):
@@ -1079,6 +1095,12 @@ class IocSchema(ma.SQLAlchemyAutoSchema):
                             max_val=POSTGRES_INT_MAX)
 
             Tlp.query.filter(Tlp.tlp_id == data.get('ioc_tlp_id')).count()
+
+        if data.get('ioc_pap_id'):
+            assert_type_mml(input_var=data.get('ioc_pap_id'), field_name='ioc_pap_id', type=int,
+                            max_val=POSTGRES_INT_MAX)
+
+            Pap.query.filter(Pap.pap_id == data.get('ioc_pap_id')).count()
 
         if data.get('ioc_tags'):
             for tag in data.get('ioc_tags').split(','):

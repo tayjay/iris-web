@@ -63,6 +63,7 @@ class IOCCreate(Mutation):
         case_id = NonNull(Float)
         type_id = NonNull(Int)
         tlp_id = NonNull(Int)
+        pap_id = Int()
         value = NonNull(String)
         description = String()
         tags = String()
@@ -70,7 +71,7 @@ class IOCCreate(Mutation):
     ioc = Field(IOCObject)
 
     @staticmethod
-    def mutate(root, info, case_id, type_id, tlp_id, value, description=None, tags=None):
+    def mutate(root, info, case_id, type_id, tlp_id, value, pap_id=None, description=None, tags=None):
         request = {
             'ioc_type_id': type_id,
             'ioc_tlp_id': tlp_id,
@@ -78,6 +79,8 @@ class IOCCreate(Mutation):
             'ioc_description': description,
             'ioc_tags': tags
         }
+        if pap_id is not None:
+            request['ioc_pap_id'] = pap_id
         permissions_check_current_user_has_some_case_access(case_id, [CaseAccessLevel.full_access])
 
         request_data = call_deprecated_on_preload_modules_hook('ioc_create', request, case_id)
@@ -94,6 +97,7 @@ class IOCUpdate(Mutation):
         ioc_id = NonNull(Float)
         type_id = Int()
         tlp_id = Int()
+        pap_id = Int()
         value = String()
         description = String()
         tags = String()
@@ -106,7 +110,7 @@ class IOCUpdate(Mutation):
     ioc = Field(IOCObject)
 
     @staticmethod
-    def mutate(root, info, ioc_id, type_id=None, tlp_id=None, value=None, description=None, tags=None,
+    def mutate(root, info, ioc_id, type_id=None, tlp_id=None, pap_id=None, value=None, description=None, tags=None,
                ioc_misp=None, user_id=None, ioc_enrichment=None, modification_history=None):
         permissions_check_current_user_has_some_case_access_stricter([CaseAccessLevel.full_access])
 
@@ -115,6 +119,8 @@ class IOCUpdate(Mutation):
             request['ioc_type_id'] = type_id
         if tlp_id:
             request['ioc_tlp_id'] = tlp_id
+        if pap_id is not None:
+            request['ioc_pap_id'] = pap_id
         if value:
             request['ioc_value'] = value
         if description:

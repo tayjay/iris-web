@@ -44,6 +44,7 @@ from app.datamgmt.case.case_iocs_db import get_detailed_iocs
 from app.datamgmt.case.case_iocs_db import get_ioc_links
 from app.datamgmt.case.case_iocs_db import get_ioc_type_id
 from app.datamgmt.case.case_iocs_db import get_tlps_dict
+from app.datamgmt.case.case_iocs_db import get_paps_dict
 from app.datamgmt.manage.manage_attribute_db import get_default_custom_attributes
 from app.datamgmt.states import get_ioc_state
 from app.iris_engine.module_handler.module_handler import call_modules_hook
@@ -129,16 +130,21 @@ def case_upload_ioc(caseid):
         jsdata = request.get_json()
 
         # get IOC list from request
-        headers = 'ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp'
+        headers = 'ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp,ioc_pap'
         csv_lines = jsdata['CSVData'].splitlines()  # unavoidable since the file is passed as a string
-        if csv_lines[0].lower() != headers:
-            csv_lines.insert(0, headers)
+        first_line = csv_lines[0].lower().strip()
+        if first_line != headers:
+            if first_line == 'ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp':
+                headers = 'ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp'
+            else:
+                csv_lines.insert(0, headers)
 
         # convert list of strings into CSV
         csv_data = csv.DictReader(csv_lines, quotechar='"', delimiter=',')
 
-        # build a Dict of possible TLP
+        # build a Dict of possible TLP and PAP
         tlp_dict = get_tlps_dict()
+        pap_dict = get_paps_dict()
         ret = []
         errors = []
 
@@ -166,6 +172,14 @@ def case_upload_ioc(caseid):
             else:
                 row['ioc_tlp_id'] = ''
             row.pop('ioc_tlp', None)
+
+            # Convert PAP into PAP id (optional column)
+            if row.get('ioc_pap') is not None:
+                if row['ioc_pap'] in pap_dict:
+                    row['ioc_pap_id'] = pap_dict[row['ioc_pap']]
+                else:
+                    row['ioc_pap_id'] = ''
+                row.pop('ioc_pap', None)
 
             type_id = get_ioc_type_id(row['ioc_type'].lower())
             if not type_id:

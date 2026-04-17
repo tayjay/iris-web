@@ -28,6 +28,7 @@ from app.datamgmt.case.case_db import get_case
 from app.datamgmt.case.case_iocs_db import get_case_iocs_comments_count
 from app.datamgmt.case.case_iocs_db import get_ioc_types_list
 from app.datamgmt.case.case_iocs_db import get_tlps
+from app.datamgmt.case.case_iocs_db import get_paps
 from app.datamgmt.manage.manage_attribute_db import get_default_custom_attributes
 from app.forms import ModalAddCaseAssetForm
 from app.forms import ModalAddCaseIOCForm
@@ -67,6 +68,7 @@ def case_add_ioc_modal(caseid, url_redir):
     form = ModalAddCaseIOCForm()
     form.ioc_type_id.choices = [(row['type_id'], row['type_name']) for row in get_ioc_types_list()]
     form.ioc_tlp_id.choices = get_tlps()
+    form.ioc_pap_id.choices = get_paps()
 
     attributes = get_default_custom_attributes('ioc')
 
@@ -85,6 +87,7 @@ def case_view_ioc_modal(cur_id, caseid, url_redir):
 
         form.ioc_type_id.choices = [(row['type_id'], row['type_name']) for row in get_ioc_types_list()]
         form.ioc_tlp_id.choices = get_tlps()
+        form.ioc_pap_id.choices = get_paps()
 
         # Render the IOC
         form.ioc_tags.render_kw = {'value': ioc.ioc_tags}

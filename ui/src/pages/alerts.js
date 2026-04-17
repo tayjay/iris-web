@@ -1113,6 +1113,7 @@ function renderAlert(alert, expanded=false, modulesOptionsAlertReq,
                                                <th>Description</th>
                                                <th>Type</th>
                                                <th>TLP</th>
+                                               <th>PAP</th>
                                                <th>Tags</th>
                                                <th>Enrichment</th>
                                                <th></th>
@@ -1132,6 +1133,7 @@ function renderAlert(alert, expanded=false, modulesOptionsAlertReq,
                                                    <td>${filterXSS(ioc.ioc_description)}</td>
                                                    <td>${ioc.ioc_type ? filterXSS(ioc.ioc_type.type_name) : '-'}</td>
                                                    <td>${filterXSS(ioc.ioc_tlp) ? ioc.ioc_tlp : '-'}</td>
+                                                   <td>${filterXSS(ioc.ioc_pap) ? ioc.ioc_pap : '-'}</td>
                                                    <td>${ioc.ioc_tags ? ioc.ioc_tags.split(',').map((tag) => get_tag_from_data(tag, 'badge badge-pill badge-light ml-1')).join('') : ''}</td>
                                                    <td>${ioc.ioc_enrichment ? `<button type="button" class="btn btn-sm btn-outline-dark" data-toggle="modal" data-target="#enrichmentModal" onclick="showEnrichment(${JSON.stringify(ioc.ioc_enrichment).replace(/"/g, '&quot;')})">
                                                       View Enrichment

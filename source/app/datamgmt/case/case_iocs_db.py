@@ -32,6 +32,7 @@ from app.models.comments import Comments
 from app.models.comments import IocComments
 from app.models.iocs import Ioc
 from app.models.models import IocType
+from app.models.iocs import Pap
 from app.models.iocs import Tlp
 from app.models.authorization import User
 from app.models.pagination_parameters import PaginationParameters
@@ -42,6 +43,7 @@ relationship_model_map = {
     'case': Cases,
     'assets': CaseAssets,
     'tlp': Tlp,
+    'pap': Pap,
     'events': CasesEvent,
     'alerts': Alert,
     'ioc_type': IocType
@@ -109,10 +111,14 @@ def get_detailed_iocs(caseid):
         Ioc.ioc_misp,
         Tlp.tlp_name,
         Tlp.tlp_bscolor,
-        Ioc.ioc_tlp_id
+        Ioc.ioc_tlp_id,
+        Pap.pap_name,
+        Pap.pap_bscolor,
+        Ioc.ioc_pap_id
     ).filter(Ioc.case_id == caseid)
      .join(Ioc.ioc_type)
      .outerjoin(Ioc.tlp)
+     .outerjoin(Ioc.pap)
      .order_by(IocType.type_name).all())
 
     return detailed_iocs
@@ -209,6 +215,17 @@ def get_tlps_dict():
     for tlp in Tlp.query.all():
         tlpDict[tlp.tlp_name] = tlp.tlp_id
     return tlpDict
+
+
+def get_paps():
+    return [(pap.pap_id, pap.pap_name) for pap in Pap.query.all()]
+
+
+def get_paps_dict():
+    papDict = {}
+    for pap in Pap.query.all():
+        papDict[pap.pap_name] = pap.pap_id
+    return papDict
 
 
 def get_case_ioc_comments(ioc_id):
@@ -309,6 +326,8 @@ def search_iocs(search_value):
         IocType.type_name,
         Tlp.tlp_name,
         Tlp.tlp_bscolor,
+        Pap.pap_name,
+        Pap.pap_bscolor,
         Cases.name.label('case_name'),
         Cases.case_id,
         Client.name.label('customer_name')
@@ -320,6 +339,6 @@ def search_iocs(search_value):
             Ioc.ioc_tlp_id == Tlp.tlp_id,
             search_condition
         )
-    ).join(Ioc.ioc_type).all()
+    ).outerjoin(Ioc.pap).join(Ioc.ioc_type).all()
 
     return [row._asdict() for row in res]

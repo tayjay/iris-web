@@ -48,6 +48,14 @@ class Tlp(db.Model):
     tlp_bscolor = Column(Text)
 
 
+class Pap(db.Model):
+    __tablename__ = 'pap'
+
+    pap_id = Column(Integer, primary_key=True)
+    pap_name = Column(Text)
+    pap_bscolor = Column(Text)
+
+
 class Ioc(db.Model):
     __tablename__ = 'ioc'
 
@@ -60,6 +68,7 @@ class Ioc(db.Model):
     user_id = Column(ForeignKey('user.id'))
     ioc_misp = Column(Text)
     ioc_tlp_id = Column(ForeignKey('tlp.tlp_id'))
+    ioc_pap_id = Column(ForeignKey('pap.pap_id'))
     custom_attributes = Column(JSON)
     ioc_enrichment = Column(JSONB)
     modification_history = Column(JSON)
@@ -68,6 +77,7 @@ class Ioc(db.Model):
 
     user = relationship('User')
     tlp = relationship('Tlp')
+    pap = relationship('Pap')
     ioc_type = relationship('IocType')
     case = relationship('Cases')
     assets = relationship('IocAssetLink', back_populates='ioc', cascade='delete')

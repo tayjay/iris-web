@@ -210,6 +210,7 @@ class ModalAddCaseIOCForm(FlaskForm):
     ioc_description = TextAreaField(u'IOC Description')
     ioc_type_id = SelectField(u'IOC Type', validators=[DataRequired()])
     ioc_tlp_id = SelectField(u'IOC TLP', validators=[DataRequired()])
+    ioc_pap_id = SelectField(u'IOC PAP')
 
 
 class ModalDSFileForm(FlaskForm):
