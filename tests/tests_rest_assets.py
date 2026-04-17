@@ -218,6 +218,7 @@ class TestsRestAssets(TestCase):
             'cases_list': [case_identifier],
             'access_level': _CASE_ACCESS_LEVEL_FULL_ACCESS
         }
+
         self._subject.create(f'/manage/users/{user2.get_identifier()}/cases-access/update', body)
         self._subject.create(f'/manage/users/{user1.get_identifier()}/cases-access/update', body)
 
@@ -293,3 +294,55 @@ class TestsRestAssets(TestCase):
         }
         response = self._subject.create('/case/assets/upload', body, query_parameters={'cid': case_identifier})
         self.assertEqual(200, response.status_code)
+
+    def test_assets_csv_preview_should_count_duplicates_in_case(self):
+        case_identifier = self._subject.create_dummy_case()
+        self._subject.create('/case/assets/add', {
+            'asset_type_id': 1,
+            'asset_name': 'srv-01',
+            'asset_description': 'existing',
+            'asset_tags': 'existing'
+        }, {'cid': case_identifier})
+
+        csv_data = 'asset_name,asset_type_name,asset_description,asset_ip,asset_domain,asset_tags\n' \
+                   'srv-01,Server,updated,,,,new_tag\n' \
+                   'srv-02,Server,new,,,,other_tag\n'
+
+        response = self._subject.create('/case/assets/upload/preview', {
+            'CSVData': csv_data,
+            'CSVOptions': {
+                'duplicate_mode': 'skip'
+            }
+        }, {'cid': case_identifier}).json()
+
+        self.assertEqual('success', response['status'])
+        self.assertEqual(1, response['data']['duplicate_rows_in_case'])
+        self.assertEqual(1, response['data']['rows_to_create'])
+
+    def test_assets_csv_upload_should_merge_duplicate_tags_and_description(self):
+        case_identifier = self._subject.create_dummy_case()
+        self._subject.create('/case/assets/add', {
+            'asset_type_id': 1,
+            'asset_name': 'srv-01',
+            'asset_description': 'existing description',
+            'asset_tags': 'existing'
+        }, {'cid': case_identifier})
+
+        csv_data = 'asset_name,asset_type_name,asset_description,asset_ip,asset_domain,asset_tags\n' \
+                   'srv-01,Server,new description,,,,incoming\n'
+
+        upload_response = self._subject.create('/case/assets/upload', {
+            'CSVData': csv_data,
+            'CSVOptions': {
+                'duplicate_mode': 'merge'
+            }
+        }, {'cid': case_identifier})
+
+        self.assertEqual(200, upload_response.status_code)
+
+        assets = self._subject.get('/case/assets/filter', {'cid': case_identifier}).json()['data']['assets']
+        merged_asset = next(asset for asset in assets if asset['asset_name'] == 'srv-01')
+        self.assertIn('existing', merged_asset['asset_tags'])
+        self.assertIn('incoming', merged_asset['asset_tags'])
+        self.assertIn('existing description', merged_asset['asset_description'])
+        self.assertIn('new description', merged_asset['asset_description'])

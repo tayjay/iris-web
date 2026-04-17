@@ -291,30 +291,107 @@ function fire_upload_iocs() {
     $('#modal_upload_ioc').modal('show');
 }
 
-function upload_ioc() {
+function _ioc_preview_text(preview) {
+    return `Rows in file: ${preview.total_rows}\n` +
+        `Valid rows: ${preview.valid_rows}\n` +
+        `Invalid rows: ${preview.invalid_rows}\n` +
+        `Duplicates in file: ${preview.duplicate_rows_in_file}\n` +
+        `Duplicates already in case: ${preview.duplicate_rows_in_case}\n` +
+        `Rows to create: ${preview.rows_to_create}`;
+}
 
-    var file = $("#input_upload_ioc").get(0).files[0];
+function _choose_ioc_duplicate_mode(preview) {
+    const has_case_duplicates = (preview.duplicate_rows_in_case || 0) > 0;
+    if (!has_case_duplicates) {
+        return Promise.resolve('skip');
+    }
+
+    return swal({
+        title: 'Duplicates detected',
+        text: _ioc_preview_text(preview) + '\n\nChoose how to handle existing IOCs in the case.',
+        icon: 'warning',
+        buttons: {
+            cancel: true,
+            skip: {
+                text: 'Skip duplicates',
+                value: 'skip'
+            },
+            merge: {
+                text: 'Merge tags + description',
+                value: 'merge'
+            }
+        }
+    });
+}
+
+function _confirm_ioc_upload(preview) {
+    return swal({
+        title: 'Confirm CSV import',
+        text: _ioc_preview_text(preview),
+        icon: 'info',
+        buttons: true
+    });
+}
+
+function upload_ioc() {
+    var file = $('#input_upload_ioc').get(0).files[0];
+    if (!file) {
+        swal('Missing file', 'Choose a CSV file before uploading.', 'warning');
+        return false;
+    }
+
     var reader = new FileReader();
     reader.onload = function (e) {
-        fileData = e.target.result
-        var data = new Object();
-        data['csrf_token'] = $('#csrf_token').val();
-        data['CSVData'] = fileData;
-
-        post_request_api('/case/ioc/upload', JSON.stringify(data), true)
-        .done((data) => {
-            jsdata = data;
-            if (jsdata.status == "success") {
-                reload_iocs();
-                $('#modal_upload_ioc').modal('hide');
-                swal("Got news for you", data.message, "success");
-
-            } else {
-                swal("Got bad news for you", data.message, "error");
+        let fileData = e.target.result;
+        let previewPayload = {
+            csrf_token: $('#csrf_token').val(),
+            CSVData: fileData,
+            CSVOptions: {
+                duplicate_mode: 'skip'
             }
-        })
+        };
+
+        post_request_api('/case/ioc/upload/preview', JSON.stringify(previewPayload), true)
+            .done((previewResponse) => {
+                if (previewResponse.status !== 'success') {
+                    swal('Got bad news for you', previewResponse.message, 'error');
+                    return;
+                }
+
+                const preview = previewResponse.data;
+                _confirm_ioc_upload(preview).then((shouldContinue) => {
+                    if (!shouldContinue) {
+                        return;
+                    }
+
+                    _choose_ioc_duplicate_mode(preview).then((duplicateMode) => {
+                        if (!duplicateMode) {
+                            return;
+                        }
+
+                        let uploadPayload = {
+                            csrf_token: $('#csrf_token').val(),
+                            CSVData: fileData,
+                            CSVOptions: {
+                                duplicate_mode: duplicateMode
+                            }
+                        };
+
+                        post_request_api('/case/ioc/upload', JSON.stringify(uploadPayload), true)
+                            .done((data) => {
+                                if (data.status == 'success') {
+                                    reload_iocs();
+                                    $('#modal_upload_ioc').modal('hide');
+                                    swal('Got news for you', data.message, 'success');
+                                } else {
+                                    swal('Got bad news for you', data.message, 'error');
+                                }
+                            });
+                    });
+                });
+            });
     };
-    reader.readAsText(file)
+    reader.readAsText(file);
 
     return false;
 }

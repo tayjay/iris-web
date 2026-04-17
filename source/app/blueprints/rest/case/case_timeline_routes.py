@@ -827,38 +827,33 @@ def case_event_date_convert(caseid):
 
 
 # BEGIN_RS_CODE
-@case_timeline_rest_blueprint.route('/case/timeline/events/csv_upload', methods=['POST'])
-@ac_requires_case_identifier(CaseAccessLevel.full_access)
-@ac_api_requires()
-def case_events_upload_csv(caseid):
-    event_schema = EventSchema()
-
-    jsdata = request.get_json()
-    app.logger.info("Starting CSV import")
+def _validate_and_prepare_events_csv(caseid, jsdata):
     event_fields = [
-        "event_date",
-        "event_tz",
-        "event_title",
-        "event_category",
-        "event_content",
-        "event_raw",
-        "event_source",
-        "event_assets",
-        "event_iocs",
-        "event_tags"
+        'event_date',
+        'event_tz',
+        'event_title',
+        'event_category',
+        'event_content',
+        'event_raw',
+        'event_source',
+        'event_assets',
+        'event_iocs',
+        'event_tags'
     ]
 
-    csv_lines = jsdata["CSVData"].splitlines()
+    csv_lines = jsdata['CSVData'].splitlines()
+    if not csv_lines:
+        return None, response_error(msg='Data error', data={'Error': 'Empty CSV file'})
 
     csv_options = jsdata.get('CSVOptions') if jsdata.get('CSVOptions') else {}
-
-    event_sync_iocs_assets = csv_options.get('event_sync_iocs_assets') if csv_options.get(
-        'event_sync_iocs_assets') else False
     event_in_summary = csv_options.get('event_in_summary') if csv_options.get('event_in_summary') else False
     event_in_graph = csv_options.get('event_in_graph') if csv_options.get('event_in_graph') else True
     event_source = csv_options.get('event_source') if csv_options.get('event_source') else ''
 
     csv_data = list(csv.DictReader(csv_lines, delimiter=','))
+    if len(csv_data) == 0:
+        return [], None
+
     missing_fields = []
     row0 = csv_data[0]
     for fld in event_fields:
@@ -868,19 +863,15 @@ def case_events_upload_csv(caseid):
     if len(missing_fields) > 0:
         csv_fields = list(row0.keys())
         msg = f"Bad SCV Fields Mapping. Fields missing: [{','.join(missing_fields)}]"
-        data = {"error_code": "BAD_FIELDS_MAPPING", "expected": ','.join(event_fields), "found": ','.join(csv_fields),
-                "missing": ','.join(missing_fields)}
+        data = {'error_code': 'BAD_FIELDS_MAPPING', 'expected': ','.join(event_fields), 'found': ','.join(csv_fields),
+                'missing': ','.join(missing_fields)}
         app.logger.warning(data)
+        return None, response_error(msg=msg, data=data)
 
-        return response_error(msg=msg, data=data)
-
-    DEFAULT_CAT_ID = get_default_category().id
-
-    # ==========================  checking data validity (assets, ioc, categories, etc... )  ==========================
+    default_cat_id = get_default_category().id
     line = 0
-    csv_lines = []
+    validated_rows = []
     try:
-
         for row in csv_data:
             event_title = row.get('event_title')
             event_assets = row.get('event_assets')
@@ -891,32 +882,31 @@ def case_events_upload_csv(caseid):
             line += 1
 
             if len(event_title) == 0:
-                return response_error(msg="Data error",
-                                      data={"Error": f"Event Title can not be empty.\nrow number: {line}"})
+                return None, response_error(msg='Data error',
+                                            data={'Error': f'Event Title can not be empty.\nrow number: {line}'})
 
             assets = []
-            for asset_name in event_assets.split(";"):
+            for asset_name in event_assets.split(';'):
                 if asset_name == '':
                     continue
                 asset = get_asset_by_name(asset_name, caseid)
                 if asset:
                     assets.append(asset.asset_id)
                 else:
-                    return response_error(msg="Data error", data={
-                        "Error": f"Asset not recognized : {asset_name}.\nrow number: {line}"})
-
+                    return None, response_error(msg='Data error',
+                                                data={'Error': f'Asset not recognized : {asset_name}.\nrow number: {line}'})
             row['event_assets'] = assets
 
             iocs = []
-            for ioc_value in event_iocs.split("|"):
+            for ioc_value in event_iocs.split('|'):
                 if ioc_value == '':
                     continue
                 ioc = get_ioc_by_value(ioc_value, caseid)
                 if ioc:
                     iocs.append(ioc.ioc_id)
                 else:
-                    return response_error(msg="Data error",
-                                          data={"Error": f"IoC not recognized : {ioc_value}.\nrow number: {line}"})
+                    return None, response_error(msg='Data error',
+                                                data={'Error': f'IoC not recognized : {ioc_value}.\nrow number: {line}'})
             row['event_iocs'] = iocs
 
             if (event_category_name is not None) and (event_category_name != ''):
@@ -924,10 +914,10 @@ def case_events_upload_csv(caseid):
                 if event_category:
                     row['event_category_id'] = event_category.id
                 else:
-                    return response_error(msg="Data error", data={
-                        "Error": f"event_category not recognized : {event_category}.\nrow number: {line}"})
+                    return None, response_error(msg='Data error',
+                                                data={'Error': f'event_category not recognized : {event_category}.\nrow number: {line}'})
             else:
-                row['event_category_id'] = DEFAULT_CAT_ID
+                row['event_category_id'] = default_cat_id
 
             if event_tags:
                 row['event_tags'] = ','.join(event_tags.split('|'))
@@ -935,15 +925,52 @@ def case_events_upload_csv(caseid):
             row['event_in_summary'] = event_in_summary
             row['event_in_graph'] = event_in_graph
             row['event_source'] = event_source
-
-            csv_lines.append(row)
+            validated_rows.append(row)
     except Exception as e:
-        return response_error(msg="Data error", data={"Exception": f"Unhandled error {e}.\nrow number: {line}"})
+        return None, response_error(msg='Data error', data={'Exception': f'Unhandled error {e}.\nrow number: {line}'})
+
+    return validated_rows, None
+
+
+@case_timeline_rest_blueprint.route('/case/timeline/events/csv_upload/preview', methods=['POST'])
+@ac_requires_case_identifier(CaseAccessLevel.full_access)
+@ac_api_requires()
+def case_events_upload_csv_preview(caseid):
+    jsdata = request.get_json()
+    validated_rows, error_response = _validate_and_prepare_events_csv(caseid, jsdata)
+    if error_response:
+        return error_response
+
+    return response_success(msg='CSV preview ready', data={
+        'total_rows': len(validated_rows),
+        'valid_rows': len(validated_rows),
+        'invalid_rows': 0,
+        'rows_to_create': len(validated_rows)
+    })
+
+
+@case_timeline_rest_blueprint.route('/case/timeline/events/csv_upload', methods=['POST'])
+@ac_requires_case_identifier(CaseAccessLevel.full_access)
+@ac_api_requires()
+def case_events_upload_csv(caseid):
+    event_schema = EventSchema()
+
+    jsdata = request.get_json()
+    app.logger.info("Starting CSV import")
+    csv_options = jsdata.get('CSVOptions') if jsdata.get('CSVOptions') else {}
+
+    event_sync_iocs_assets = csv_options.get('event_sync_iocs_assets') if csv_options.get(
+        'event_sync_iocs_assets') else False
+    event_in_summary = csv_options.get('event_in_summary') if csv_options.get('event_in_summary') else False
+    event_in_graph = csv_options.get('event_in_graph') if csv_options.get('event_in_graph') else True
+    validated_rows, error_response = _validate_and_prepare_events_csv(caseid, jsdata)
+    if error_response:
+        return error_response
 
     session = db.session.begin_nested()
     line = 0
     try:
-        for row in csv_lines:
+        for row in validated_rows:
             if row is None:
                 continue
             line += 1

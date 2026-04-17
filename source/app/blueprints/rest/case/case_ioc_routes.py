@@ -36,7 +36,6 @@ from app.business.iocs import iocs_get
 from app.models.errors import BusinessProcessingError
 from app.models.errors import ObjectNotFoundError
 from app.datamgmt.case.case_iocs_db import add_comment_to_ioc
-from app.datamgmt.case.case_iocs_db import add_ioc
 from app.datamgmt.case.case_iocs_db import delete_ioc_comment
 from app.datamgmt.case.case_iocs_db import get_case_ioc_comment
 from app.datamgmt.case.case_iocs_db import get_case_ioc_comments
@@ -50,6 +49,7 @@ from app.datamgmt.states import get_ioc_state
 from app.iris_engine.module_handler.module_handler import call_modules_hook
 from app.iris_engine.utils.tracker import track_activity
 from app.models.authorization import CaseAccessLevel
+from app.models.iocs import Ioc
 from app.schema.marshables import CommentSchema
 from app.schema.marshables import IocSchema
 from app.blueprints.access_controls import ac_requires_case_identifier
@@ -62,6 +62,161 @@ from app.iris_engine.module_handler.module_handler import call_deprecated_on_pre
 from app.iris_engine.access_control.utils import ac_get_fast_user_cases_access
 
 case_ioc_rest_blueprint = Blueprint('case_ioc_rest', __name__)
+
+_DUPLICATE_MODE_SKIP = 'skip'
+_DUPLICATE_MODE_MERGE = 'merge'
+_SUPPORTED_DUPLICATE_MODES = {_DUPLICATE_MODE_SKIP, _DUPLICATE_MODE_MERGE}
+
+
+def _merge_csv_text(existing_text, incoming_text):
+    existing = (existing_text or '').strip()
+    incoming = (incoming_text or '').strip()
+    if not incoming:
+        return existing_text, False
+    if not existing:
+        return incoming, True
+    if existing == incoming:
+        return existing_text, False
+    return f'{existing}\n\n{incoming}', True
+
+
+def _merge_csv_tags(existing_tags, incoming_tags):
+    existing_items = [item.strip() for item in (existing_tags or '').split(',') if item and item.strip()]
+    incoming_items = [item.strip() for item in (incoming_tags or '').split(',') if item and item.strip()]
+    if not incoming_items:
+        return existing_tags, False
+
+    merged = list(existing_items)
+    seen = set(existing_items)
+    for tag in incoming_items:
+        if tag not in seen:
+            merged.append(tag)
+            seen.add(tag)
+
+    new_value = ','.join(merged)
+    return new_value, new_value != (existing_tags or '')
+
+
+def _get_existing_ioc(caseid, ioc_value, ioc_type_id):
+    return Ioc.query.filter(
+        Ioc.case_id == caseid,
+        Ioc.ioc_value == ioc_value,
+        Ioc.ioc_type_id == ioc_type_id
+    ).first()
+
+
+def _parse_ioc_csv(caseid, jsdata, duplicate_mode):
+    headers = 'ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp,ioc_pap'
+    csv_lines = jsdata['CSVData'].splitlines()  # unavoidable since the file is passed as a string
+    if not csv_lines:
+        return {
+            'errors': ['Empty CSV file'],
+            'rows': [],
+            'total_rows': 0,
+            'duplicate_rows_in_file': 0
+        }
+
+    first_line = csv_lines[0].lower().strip()
+    if first_line != headers:
+        if first_line == 'ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp':
+            headers = 'ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp'
+        else:
+            csv_lines.insert(0, headers)
+
+    csv_data = csv.DictReader(csv_lines, quotechar='"', delimiter=',')
+    tlp_dict = get_tlps_dict()
+    pap_dict = get_paps_dict()
+
+    errors = []
+    total_rows = 0
+    duplicate_rows_in_file = 0
+    prepared_rows = []
+    dedupe_index = {}
+
+    for index, row in enumerate(csv_data):
+        total_rows += 1
+        missing_field = False
+        for header in headers.split(','):
+            if row.get(header) is None:
+                errors.append(f'{header} is missing for row {index}')
+                missing_field = True
+
+        if missing_field:
+            continue
+
+        row['ioc_value'] = (row.get('ioc_value') or '').strip()
+        row['ioc_type'] = (row.get('ioc_type') or '').strip()
+        row['ioc_description'] = row.get('ioc_description') or ''
+        row['ioc_tags'] = (row.get('ioc_tags') or '').replace('|', ',').strip()
+
+        if not row.get('ioc_value'):
+            errors.append(f'Empty IOC value for row {index}')
+            track_activity('Attempted to upload an empty IOC value')
+            continue
+
+        if row.get('ioc_tlp') in tlp_dict:
+            row['ioc_tlp_id'] = tlp_dict[row.get('ioc_tlp')]
+        else:
+            row['ioc_tlp_id'] = ''
+        row.pop('ioc_tlp', None)
+
+        if row.get('ioc_pap') is not None:
+            if row.get('ioc_pap') in pap_dict:
+                row['ioc_pap_id'] = pap_dict[row.get('ioc_pap')]
+            else:
+                row['ioc_pap_id'] = ''
+            row.pop('ioc_pap', None)
+
+        type_id = get_ioc_type_id(row['ioc_type'].lower()) if row.get('ioc_type') else None
+        if not type_id:
+            ioc_value = row.get('ioc_value')
+            ioc_type = row.get('ioc_type')
+            errors.append(f'{ioc_value} (invalid ioc type: {ioc_type}) for row {index}')
+            log.error(f'Unrecognised IOC type {ioc_type}')
+            continue
+
+        row['ioc_type_id'] = type_id.type_id
+        row.pop('ioc_type', None)
+
+        dedupe_key = (row['ioc_value'], row['ioc_type_id'])
+        if dedupe_key in dedupe_index:
+            duplicate_rows_in_file += 1
+            if duplicate_mode == _DUPLICATE_MODE_MERGE:
+                existing_row = prepared_rows[dedupe_index[dedupe_key]]
+                merged_tags, _ = _merge_csv_tags(existing_row.get('ioc_tags'), row.get('ioc_tags'))
+                merged_desc, _ = _merge_csv_text(existing_row.get('ioc_description'), row.get('ioc_description'))
+                existing_row['ioc_tags'] = merged_tags
+                existing_row['ioc_description'] = merged_desc
+            continue
+
+        dedupe_index[dedupe_key] = len(prepared_rows)
+        prepared_rows.append(row)
+
+    return {
+        'errors': errors,
+        'rows': prepared_rows,
+        'total_rows': total_rows,
+        'duplicate_rows_in_file': duplicate_rows_in_file
+    }
+
+
+def _merge_existing_ioc(existing_ioc, incoming_row):
+    updated = False
+
+    merged_tags, changed_tags = _merge_csv_tags(existing_ioc.ioc_tags, incoming_row.get('ioc_tags'))
+    if changed_tags:
+        existing_ioc.ioc_tags = merged_tags
+        updated = True
+
+    merged_desc, changed_desc = _merge_csv_text(existing_ioc.ioc_description, incoming_row.get('ioc_description'))
+    if changed_desc:
+        existing_ioc.ioc_description = merged_desc
+        updated = True
+
+    if updated:
+        db.session.commit()
+
+    return updated
 
 
 @case_ioc_rest_blueprint.route('/case/ioc/list', methods=['GET'])
@@ -125,99 +280,99 @@ def deprecated_case_add_ioc(caseid):
 @ac_api_requires()
 def case_upload_ioc(caseid):
     try:
-        # validate before saving
         add_ioc_schema = IocSchema()
         jsdata = request.get_json()
 
-        # get IOC list from request
-        headers = 'ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp,ioc_pap'
-        csv_lines = jsdata['CSVData'].splitlines()  # unavoidable since the file is passed as a string
-        first_line = csv_lines[0].lower().strip()
-        if first_line != headers:
-            if first_line == 'ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp':
-                headers = 'ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp'
-            else:
-                csv_lines.insert(0, headers)
+        csv_options = jsdata.get('CSVOptions') if jsdata.get('CSVOptions') else {}
+        duplicate_mode = csv_options.get('duplicate_mode', _DUPLICATE_MODE_SKIP)
+        if duplicate_mode not in _SUPPORTED_DUPLICATE_MODES:
+            return response_error(msg='Data error', data={'duplicate_mode': 'Unsupported duplicate handling mode'})
 
-        # convert list of strings into CSV
-        csv_data = csv.DictReader(csv_lines, quotechar='"', delimiter=',')
-
-        # build a Dict of possible TLP and PAP
-        tlp_dict = get_tlps_dict()
-        pap_dict = get_paps_dict()
+        parse_data = _parse_ioc_csv(caseid, jsdata, duplicate_mode)
         ret = []
-        errors = []
+        errors = list(parse_data['errors'])
+        created = 0
+        merged = 0
+        skipped_existing = 0
 
-        index = 0
-        for row in csv_data:
-
-            for e in headers.split(','):
-                if row.get(e) is None:
-                    errors.append(f'{e} is missing for row {index}')
-                    index += 1
-                    continue
-
-            # IOC value must not be empty
-            if not row.get('ioc_value'):
-                errors.append(f'Empty IOC value for row {index}')
-                track_activity('Attempted to upload an empty IOC value')
-                index += 1
-                continue
-
-            row['ioc_tags'] = row['ioc_tags'].replace('|', ',')  # Reformat Tags
-
-            # Convert TLP into TLP id
-            if row['ioc_tlp'] in tlp_dict:
-                row['ioc_tlp_id'] = tlp_dict[row['ioc_tlp']]
-            else:
-                row['ioc_tlp_id'] = ''
-            row.pop('ioc_tlp', None)
-
-            # Convert PAP into PAP id (optional column)
-            if row.get('ioc_pap') is not None:
-                if row['ioc_pap'] in pap_dict:
-                    row['ioc_pap_id'] = pap_dict[row['ioc_pap']]
+        for row in parse_data['rows']:
+            existing_ioc = _get_existing_ioc(caseid, row['ioc_value'], row['ioc_type_id'])
+            if existing_ioc:
+                if duplicate_mode == _DUPLICATE_MODE_MERGE:
+                    if _merge_existing_ioc(existing_ioc, row):
+                        merged += 1
+                        track_activity(f'merged ioc "{existing_ioc.ioc_value}" from CSV import', caseid=caseid)
                 else:
-                    row['ioc_pap_id'] = ''
-                row.pop('ioc_pap', None)
-
-            type_id = get_ioc_type_id(row['ioc_type'].lower())
-            if not type_id:
-                ioc_value = row['ioc_value']
-                ioc_type = row['ioc_type']
-                errors.append(f'{ioc_value} (invalid ioc type: {ioc_type}) for row {index}')
-                log.error(f'Unrecognised IOC type {ioc_type}')
-                index += 1
+                    skipped_existing += 1
                 continue
 
-            row['ioc_type_id'] = type_id.type_id
-            row.pop('ioc_type', None)
+            try:
+                request_data = call_modules_hook('on_preload_ioc_create', row, caseid=caseid)
+                request_data['case_id'] = caseid
 
-            request_data = call_modules_hook('on_preload_ioc_create', row, caseid=caseid)
-
-            ioc = add_ioc_schema.load(request_data)
-            ioc.custom_attributes = get_default_custom_attributes('ioc')
-            index += 1
-
-            if not ioc:
-                errors.append(f'{ioc.ioc_value} (internal reasons)')
-                log.error(f'Unable to create IOC {ioc.ioc_value} for internal reasons')
-                continue
-
-            add_ioc(ioc, iris_current_user.id, caseid)
-            ioc = call_modules_hook('on_postload_ioc_create', ioc, caseid=caseid)
-            ret.append(request_data)
-            track_activity(f'added ioc "{ioc.ioc_value}"', caseid=caseid)
+                ioc = add_ioc_schema.load(request_data)
+                ioc.custom_attributes = get_default_custom_attributes('ioc')
+                ioc = iocs_create(ioc)
+                ret.append(request_data)
+                created += 1
+            except marshmallow.exceptions.ValidationError as e:
+                errors.append(f'Data error for IOC {row.get("ioc_value")}: {e.messages}')
+            except BusinessProcessingError as e:
+                errors.append(e.get_message())
 
         if len(errors) == 0:
             msg = 'Successfully imported data.'
         else:
             msg = 'Data is imported but we got errors with the following rows:\n- ' + '\n- '.join(errors)
 
-        return response_success(msg=msg, data=ret)
+        summary = {
+            'total_rows': parse_data['total_rows'],
+            'duplicate_rows_in_file': parse_data['duplicate_rows_in_file'],
+            'created_rows': created,
+            'merged_rows': merged,
+            'skipped_existing_rows': skipped_existing,
+            'invalid_rows': len(errors)
+        }
+
+        return response_success(msg=msg, data={'created': ret, 'summary': summary})
 
     except marshmallow.exceptions.ValidationError as e:
         return response_error(msg='Data error', data=e.messages)
+
+
+@case_ioc_rest_blueprint.route('/case/ioc/upload/preview', methods=['POST'])
+@ac_requires_case_identifier(CaseAccessLevel.full_access)
+@ac_api_requires()
+def case_upload_ioc_preview(caseid):
+    jsdata = request.get_json()
+    csv_options = jsdata.get('CSVOptions') if jsdata.get('CSVOptions') else {}
+    duplicate_mode = csv_options.get('duplicate_mode', _DUPLICATE_MODE_SKIP)
+    if duplicate_mode not in _SUPPORTED_DUPLICATE_MODES:
+        return response_error(msg='Data error', data={'duplicate_mode': 'Unsupported duplicate handling mode'})
+
+    parse_data = _parse_ioc_csv(caseid, jsdata, duplicate_mode)
+    duplicate_rows_in_case = 0
+    for row in parse_data['rows']:
+        if _get_existing_ioc(caseid, row['ioc_value'], row['ioc_type_id']):
+            duplicate_rows_in_case += 1
+
+    rows_to_create = len(parse_data['rows']) - duplicate_rows_in_case
+    rows_to_merge = duplicate_rows_in_case if duplicate_mode == _DUPLICATE_MODE_MERGE else 0
+
+    return response_success(
+        msg='CSV preview ready',
+        data={
+            'duplicate_mode': duplicate_mode,
+            'total_rows': parse_data['total_rows'],
+            'valid_rows': len(parse_data['rows']),
+            'invalid_rows': len(parse_data['errors']),
+            'duplicate_rows_in_file': parse_data['duplicate_rows_in_file'],
+            'duplicate_rows_in_case': duplicate_rows_in_case,
+            'rows_to_create': rows_to_create,
+            'rows_to_merge': rows_to_merge,
+            'errors': parse_data['errors']
+        }
+    )
 
 
 @case_ioc_rest_blueprint.route('/case/ioc/delete/<int:cur_id>', methods=['POST'])

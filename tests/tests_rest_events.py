@@ -426,3 +426,16 @@ class TestsRestEvents(TestCase):
         case_identifier2 = self._subject.create_dummy_case()
         response = self._subject.delete(f'/api/v2/cases/{case_identifier2}/events/{identifier}')
         self.assertEqual(400, response.status_code)
+
+    def test_events_csv_preview_should_return_summary(self):
+        case_identifier = self._subject.create_dummy_case()
+        body = {
+            'CSVData': 'event_date,event_tz,event_title,event_category,event_content,event_raw,event_source,event_assets,event_iocs,event_tags\n'
+                       '2025-03-26T00:00:00.000,+00:00,Test event,Unspecified,description,raw,source,,,tag1|tag2\n'
+        }
+
+        response = self._subject.create('/case/timeline/events/csv_upload/preview', body, {'cid': case_identifier})
+        self.assertEqual(200, response.status_code)
+        payload = response.json()
+        self.assertEqual('success', payload['status'])
+        self.assertEqual(1, payload['data']['rows_to_create'])

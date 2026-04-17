@@ -18,6 +18,7 @@
 
 import csv
 from datetime import datetime
+from sqlalchemy import func
 from flask import Blueprint
 from flask import request
 from marshmallow import ValidationError
@@ -51,6 +52,7 @@ from app.datamgmt.states import get_assets_state
 from app.iris_engine.module_handler.module_handler import call_modules_hook
 from app.iris_engine.utils.tracker import track_activity
 from app.models.assets import AnalysisStatus
+from app.models.assets import CaseAssets
 from app.models.authorization import CaseAccessLevel
 from app.schema.marshables import CaseAssetsSchema
 from app.schema.marshables import CommentSchema
@@ -61,6 +63,169 @@ from app.blueprints.responses import response_success
 from app.blueprints.access_controls import ac_api_return_access_denied
 
 case_assets_rest_blueprint = Blueprint('case_assets_rest', __name__)
+
+_DUPLICATE_MODE_SKIP = 'skip'
+_DUPLICATE_MODE_MERGE = 'merge'
+_SUPPORTED_DUPLICATE_MODES = {_DUPLICATE_MODE_SKIP, _DUPLICATE_MODE_MERGE}
+
+
+def _merge_csv_text(existing_text, incoming_text):
+    existing = (existing_text or '').strip()
+    incoming = (incoming_text or '').strip()
+    if not incoming:
+        return existing_text, False
+    if not existing:
+        return incoming, True
+    if existing == incoming:
+        return existing_text, False
+    return f'{existing}\n\n{incoming}', True
+
+
+def _merge_csv_tags(existing_tags, incoming_tags):
+    existing_items = [item.strip() for item in (existing_tags or '').split(',') if item and item.strip()]
+    incoming_items = [item.strip() for item in (incoming_tags or '').split(',') if item and item.strip()]
+    if not incoming_items:
+        return existing_tags, False
+
+    merged = list(existing_items)
+    seen = set(existing_items)
+    for tag in incoming_items:
+        if tag not in seen:
+            merged.append(tag)
+            seen.add(tag)
+
+    new_value = ','.join(merged)
+    return new_value, new_value != (existing_tags or '')
+
+
+def _normalize_asset_csv_row(row):
+    normalized = dict(row)
+    normalized['asset_name'] = (normalized.get('asset_name') or '').strip()
+    normalized['asset_type_name'] = (normalized.get('asset_type_name') or '').strip()
+    normalized['asset_description'] = normalized.get('asset_description') or ''
+    normalized['asset_ip'] = (normalized.get('asset_ip') or '').strip()
+    normalized['asset_domain'] = (normalized.get('asset_domain') or '').strip()
+    normalized['asset_tags'] = ((normalized.get('asset_tags') or '').replace('|', ',')).strip()
+    return normalized
+
+
+def _get_existing_asset(caseid, asset_name, asset_type_id):
+    return CaseAssets.query.filter(
+        CaseAssets.case_id == caseid,
+        CaseAssets.asset_type_id == asset_type_id,
+        func.lower(CaseAssets.asset_name) == func.lower(asset_name)
+    ).first()
+
+
+def _parse_asset_csv(caseid, jsdata, duplicate_mode):
+    headers = 'asset_name,asset_type_name,asset_description,asset_ip,asset_domain,asset_tags'
+    csv_lines = jsdata['CSVData'].splitlines()  # unavoidable since the file is passed as a string
+    if not csv_lines:
+        return {
+            'errors': ['Empty CSV file'],
+            'rows': [],
+            'total_rows': 0,
+            'duplicate_rows_in_file': 0
+        }
+
+    if csv_lines[0].lower() != headers:
+        csv_lines.insert(0, headers)
+
+    csv_data = csv.DictReader(csv_lines, delimiter=',')
+    analysis_status = AnalysisStatus.query.filter(AnalysisStatus.name == 'Unspecified').first()
+    analysis_status_id = analysis_status.id
+
+    errors = []
+    total_rows = 0
+    duplicate_rows_in_file = 0
+    prepared_rows = []
+    dedupe_index = {}
+
+    for index, row in enumerate(csv_data):
+        total_rows += 1
+        missing_field = False
+        for header in headers.split(','):
+            if row.get(header) is None:
+                errors.append(f'{header} is missing for row {index}')
+                missing_field = True
+
+        if missing_field:
+            continue
+
+        row = _normalize_asset_csv_row(row)
+
+        if not row.get('asset_name'):
+            errors.append(f'Empty asset name for row {index}')
+            track_activity('Attempted to upload an empty asset name')
+            continue
+
+        if not row.get('asset_type_name'):
+            errors.append(f'Empty asset type for row {index}')
+            track_activity('Attempted to upload an empty asset type')
+            continue
+
+        asset_type = get_asset_type_by_name_case_insensitive(row['asset_type_name'])
+        if not asset_type:
+            errors.append(f"{row.get('asset_name')} (invalid asset type: {row.get('asset_type_name')}) for row {index}")
+            track_activity(f"Attempted to upload unrecognized asset type \"{row.get('asset_type_name')}\"")
+            continue
+
+        row['asset_type_id'] = asset_type.asset_id
+        row['analysis_status_id'] = analysis_status_id
+        row.pop('asset_type_name', None)
+
+        dedupe_key = (row['asset_name'].lower(), row['asset_type_id'])
+        if dedupe_key in dedupe_index:
+            duplicate_rows_in_file += 1
+            if duplicate_mode == _DUPLICATE_MODE_MERGE:
+                existing_row = prepared_rows[dedupe_index[dedupe_key]]
+                merged_tags, _ = _merge_csv_tags(existing_row.get('asset_tags'), row.get('asset_tags'))
+                merged_desc, _ = _merge_csv_text(existing_row.get('asset_description'), row.get('asset_description'))
+                existing_row['asset_tags'] = merged_tags
+                existing_row['asset_description'] = merged_desc
+                if not existing_row.get('asset_ip') and row.get('asset_ip'):
+                    existing_row['asset_ip'] = row.get('asset_ip')
+                if not existing_row.get('asset_domain') and row.get('asset_domain'):
+                    existing_row['asset_domain'] = row.get('asset_domain')
+            continue
+
+        dedupe_index[dedupe_key] = len(prepared_rows)
+        prepared_rows.append(row)
+
+    return {
+        'errors': errors,
+        'rows': prepared_rows,
+        'total_rows': total_rows,
+        'duplicate_rows_in_file': duplicate_rows_in_file
+    }
+
+
+def _merge_existing_asset(existing_asset, incoming_row):
+    updated = False
+
+    merged_tags, changed_tags = _merge_csv_tags(existing_asset.asset_tags, incoming_row.get('asset_tags'))
+    if changed_tags:
+        existing_asset.asset_tags = merged_tags
+        updated = True
+
+    merged_desc, changed_desc = _merge_csv_text(existing_asset.asset_description, incoming_row.get('asset_description'))
+    if changed_desc:
+        existing_asset.asset_description = merged_desc
+        updated = True
+
+    if not (existing_asset.asset_ip or '').strip() and (incoming_row.get('asset_ip') or '').strip():
+        existing_asset.asset_ip = incoming_row.get('asset_ip').strip()
+        updated = True
+
+    if not (existing_asset.asset_domain or '').strip() and (incoming_row.get('asset_domain') or '').strip():
+        existing_asset.asset_domain = incoming_row.get('asset_domain').strip()
+        updated = True
+
+    if updated:
+        existing_asset.date_update = datetime.utcnow()
+        db.session.commit()
+
+    return updated
 
 
 @case_assets_rest_blueprint.route('/case/assets/filter', methods=['GET'])
@@ -183,98 +348,101 @@ def deprecated_add_asset(caseid):
 @ac_api_requires()
 def case_upload_asset(caseid):
     try:
-        # validate before saving
         add_asset_schema = CaseAssetsSchema()
         jsdata = request.get_json()
+        csv_options = jsdata.get('CSVOptions') if jsdata.get('CSVOptions') else {}
+        duplicate_mode = csv_options.get('duplicate_mode', _DUPLICATE_MODE_SKIP)
+        if duplicate_mode not in _SUPPORTED_DUPLICATE_MODES:
+            return response_error(msg='Data error', data={'duplicate_mode': 'Unsupported duplicate handling mode'})
 
-        # get IOC list from request
-        csv_lines = jsdata["CSVData"].splitlines()  # unavoidable since the file is passed as a string
-
-        headers = "asset_name,asset_type_name,asset_description,asset_ip,asset_domain,asset_tags"
-
-        if csv_lines[0].lower() != headers:
-            csv_lines.insert(0, headers)
-
-        # convert list of strings into CSV
-        csv_data = csv.DictReader(csv_lines, delimiter=',')
-
+        parse_data = _parse_asset_csv(caseid, jsdata, duplicate_mode)
+        errors = list(parse_data['errors'])
+        created = 0
+        merged = 0
+        skipped_existing = 0
         ret = []
-        errors = []
 
-        analysis_status = AnalysisStatus.query.filter(AnalysisStatus.name == 'Unspecified').first()
-        analysis_status_id = analysis_status.id
+        for row in parse_data['rows']:
+            existing_asset = _get_existing_asset(caseid, row['asset_name'], row['asset_type_id'])
+            if existing_asset:
+                if duplicate_mode == _DUPLICATE_MODE_MERGE:
+                    if _merge_existing_asset(existing_asset, row):
+                        merged += 1
+                        track_activity(f'merged asset "{existing_asset.asset_name}" from CSV import', caseid=caseid)
+                else:
+                    skipped_existing += 1
+                continue
 
-        index = 0
-        for row in csv_data:
-            missing_field = False
-            for e in headers.split(','):
-                if row.get(e) is None:
-                    errors.append(f"{e} is missing for row {index}")
-                    missing_field = True
+            try:
+                request_data = call_modules_hook('on_preload_asset_create', row, caseid=caseid)
+                asset_sc = add_asset_schema.load(request_data)
+                asset_sc.custom_attributes = get_default_custom_attributes('asset')
+                asset = create_asset(asset=asset_sc, caseid=caseid, user_id=iris_current_user.id)
+                asset = call_modules_hook('on_postload_asset_create', asset, caseid=caseid)
+
+                if not asset:
+                    errors.append('Unable to add asset for internal reason')
                     continue
 
-            if missing_field:
-                continue
+                created += 1
+                ret.append(request_data)
+                track_activity(f'added asset {asset.asset_name}', caseid=caseid)
+            except ValidationError as e:
+                errors.append(f'Data error for asset {row.get("asset_name")}: {e.messages}')
 
-            # Asset name must not be empty
-            if not row.get("asset_name"):
-                errors.append(f"Empty asset name for row {index}")
-                track_activity("Attempted to upload an empty asset name")
-                index += 1
-                continue
-
-            if row.get("asset_tags"):
-                row["asset_tags"] = row.get("asset_tags").replace("|", ",")  # Reformat Tags
-
-            if not row.get('asset_type_name'):
-                errors.append(f"Empty asset type for row {index}")
-                track_activity("Attempted to upload an empty asset type")
-                index += 1
-                continue
-
-            asset_type = get_asset_type_by_name_case_insensitive(row['asset_type_name'])
-            if not asset_type:
-                errors.append(f"{row.get('asset_name')} (invalid asset type: {row.get('asset_type_name')}) for row {index}")
-                track_activity(f"Attempted to upload unrecognized asset type \"{row.get('asset_type_name')}\"")
-                index += 1
-                continue
-
-            row['asset_type_id'] = asset_type.asset_id
-            row.pop('asset_type_name', None)
-
-            row['analysis_status_id'] = analysis_status_id
-
-            request_data = call_modules_hook('on_preload_asset_create', row, caseid=caseid)
-
-            add_asset_schema.is_unique_for_cid(caseid, request_data)
-            asset_sc = add_asset_schema.load(request_data)
-            asset_sc.custom_attributes = get_default_custom_attributes('asset')
-            asset = create_asset(asset=asset_sc,
-                                 caseid=caseid,
-                                 user_id=iris_current_user.id
-                                 )
-
-            asset = call_modules_hook('on_postload_asset_create', asset, caseid=caseid)
-
-            if not asset:
-                errors.append('Unable to add asset for internal reason')
-                index += 1
-                continue
-
-            ret.append(request_data)
-            track_activity(f"added asset {asset.asset_name}", caseid=caseid)
-
-            index += 1
+        summary = {
+            'total_rows': parse_data['total_rows'],
+            'duplicate_rows_in_file': parse_data['duplicate_rows_in_file'],
+            'created_rows': created,
+            'merged_rows': merged,
+            'skipped_existing_rows': skipped_existing,
+            'invalid_rows': len(errors)
+        }
 
         if len(errors) == 0:
-            msg = "Successfully imported data."
+            msg = 'Successfully imported data.'
         else:
-            msg = "Data is imported but we got errors with the following rows:\n- " + "\n- ".join(errors)
+            msg = 'Data is imported but we got errors with the following rows:\n- ' + '\n- '.join(errors)
 
-        return response_success(msg=msg, data=ret)
+        return response_success(msg=msg, data={'created': ret, 'summary': summary})
 
     except ValidationError as e:
         return response_error(msg='Data error', data=e.messages)
+
+
+@case_assets_rest_blueprint.route('/case/assets/upload/preview', methods=['POST'])
+@ac_requires_case_identifier(CaseAccessLevel.full_access)
+@ac_api_requires()
+def case_upload_asset_preview(caseid):
+    jsdata = request.get_json()
+    csv_options = jsdata.get('CSVOptions') if jsdata.get('CSVOptions') else {}
+    duplicate_mode = csv_options.get('duplicate_mode', _DUPLICATE_MODE_SKIP)
+    if duplicate_mode not in _SUPPORTED_DUPLICATE_MODES:
+        return response_error(msg='Data error', data={'duplicate_mode': 'Unsupported duplicate handling mode'})
+
+    parse_data = _parse_asset_csv(caseid, jsdata, duplicate_mode)
+    duplicate_rows_in_case = 0
+    for row in parse_data['rows']:
+        if _get_existing_asset(caseid, row['asset_name'], row['asset_type_id']):
+            duplicate_rows_in_case += 1
+
+    rows_to_create = len(parse_data['rows']) - duplicate_rows_in_case
+    rows_to_merge = duplicate_rows_in_case if duplicate_mode == _DUPLICATE_MODE_MERGE else 0
+
+    return response_success(
+        msg='CSV preview ready',
+        data={
+            'duplicate_mode': duplicate_mode,
+            'total_rows': parse_data['total_rows'],
+            'valid_rows': len(parse_data['rows']),
+            'invalid_rows': len(parse_data['errors']),
+            'duplicate_rows_in_file': parse_data['duplicate_rows_in_file'],
+            'duplicate_rows_in_case': duplicate_rows_in_case,
+            'rows_to_create': rows_to_create,
+            'rows_to_merge': rows_to_merge,
+            'errors': parse_data['errors']
+        }
+    )
 
 
 @case_assets_rest_blueprint.route('/case/assets/<int:cur_id>', methods=['GET'])

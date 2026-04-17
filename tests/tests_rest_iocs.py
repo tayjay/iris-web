@@ -240,6 +240,62 @@ class TestsRestIocs(TestCase):
         response = self._subject.create(f'/api/v2/cases/{case_identifier}/iocs', body).json()
         self.assertEqual(pap_identifier, response['ioc_pap_id'])
 
+    def test_ioc_csv_preview_should_count_duplicates_in_case(self):
+        case_identifier = self._subject.create_dummy_case()
+        self._subject.create('/case/ioc/add', {
+            'ioc_value': '8.8.8.8',
+            'ioc_type_id': 1,
+            'ioc_description': 'existing',
+            'ioc_tags': 'existing',
+            'ioc_tlp_id': 2,
+            'ioc_pap_id': 1
+        }, {'cid': case_identifier})
+
+        csv_data = 'ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp,ioc_pap\n' \
+                   '8.8.8.8,ip-dst,new description,new_tag,green,green\n' \
+                   '9.9.9.9,ip-dst,another,new,green,green\n'
+
+        response = self._subject.create('/case/ioc/upload/preview', {
+            'CSVData': csv_data,
+            'CSVOptions': {
+                'duplicate_mode': 'skip'
+            }
+        }, {'cid': case_identifier}).json()
+
+        self.assertEqual('success', response['status'])
+        self.assertEqual(1, response['data']['duplicate_rows_in_case'])
+        self.assertEqual(1, response['data']['rows_to_create'])
+
+    def test_ioc_csv_upload_should_merge_duplicate_tags_and_description(self):
+        case_identifier = self._subject.create_dummy_case()
+        self._subject.create('/case/ioc/add', {
+            'ioc_value': '8.8.8.8',
+            'ioc_type_id': 1,
+            'ioc_description': 'existing description',
+            'ioc_tags': 'existing',
+            'ioc_tlp_id': 2,
+            'ioc_pap_id': 1
+        }, {'cid': case_identifier})
+
+        csv_data = 'ioc_value,ioc_type,ioc_description,ioc_tags,ioc_tlp,ioc_pap\n' \
+                   '8.8.8.8,ip-dst,new description,incoming,green,green\n'
+
+        upload_response = self._subject.create('/case/ioc/upload', {
+            'CSVData': csv_data,
+            'CSVOptions': {
+                'duplicate_mode': 'merge'
+            }
+        }, {'cid': case_identifier})
+
+        self.assertEqual(200, upload_response.status_code)
+
+        iocs = self._subject.get('/case/ioc/list', {'cid': case_identifier}).json()['data']['ioc']
+        merged_ioc = next(ioc for ioc in iocs if ioc['ioc_value'] == '8.8.8.8')
+        self.assertIn('existing', merged_ioc['ioc_tags'])
+        self.assertIn('incoming', merged_ioc['ioc_tags'])
+        self.assertIn('existing description', merged_ioc['ioc_description'])
+        self.assertIn('new description', merged_ioc['ioc_description'])
+
     def test_get_iocs_should_include_pap_information(self):
         case_identifier = self._subject.create_dummy_case()
         pap_identifier = 2

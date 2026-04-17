@@ -1311,31 +1311,65 @@ function fire_upload_csv_events() {
     $('#modal_upload_csv_events').modal('show');
 }
 
+function _events_preview_text(preview) {
+    return `Rows in file: ${preview.total_rows}\n` +
+        `Valid rows: ${preview.valid_rows}\n` +
+        `Invalid rows: ${preview.invalid_rows}\n` +
+        `Rows to create: ${preview.rows_to_create}`;
+}
+
 function upload_csv_events() {
     const modal_dlg = '#modal_upload_csv_events'
     const file_input = '#input_upload_csv_events'
 
     var file = $(file_input).get(0).files[0];
+    if (!file) {
+        swal('Missing file', 'Choose a CSV file before uploading.', 'warning');
+        return false;
+    }
 
     var reader = new FileReader();
     reader.onload = function (e) {
         let fileData = e.target.result
-        let data = new Object();
-        data['csrf_token'] = $('#csrf_token').val();
-        data['CSVData'] = fileData;
+        let previewPayload = {
+            csrf_token: $('#csrf_token').val(),
+            CSVData: fileData
+        };
 
-        post_request_api('/case/timeline/events/csv_upload', JSON.stringify(data), true)
-        .done((data) => {
+        post_request_api('/case/timeline/events/csv_upload/preview', JSON.stringify(previewPayload), true)
+            .done((previewResponse) => {
+                if (previewResponse.status !== 'success') {
+                    swal('Got bad news for you', previewResponse.message, 'error');
+                    return;
+                }
 
-            if (notify_auto_api(data)) {
-                apply_filtering();
-                $(modal_dlg).modal('hide');
-                swal("Got news for you", data.message, "success");
-            } else {
-                //alert( JSON.stringify(data.data,null,2));
-                swal("Got bad news for you", data.message, "error");
-            }
-        })
+                swal({
+                    title: 'Confirm CSV import',
+                    text: _events_preview_text(previewResponse.data),
+                    icon: 'info',
+                    buttons: true
+                }).then((willUpload) => {
+                    if (!willUpload) {
+                        return;
+                    }
+
+                    let uploadPayload = {
+                        csrf_token: $('#csrf_token').val(),
+                        CSVData: fileData
+                    };
+
+                    post_request_api('/case/timeline/events/csv_upload', JSON.stringify(uploadPayload), true)
+                        .done((data) => {
+                            if (notify_auto_api(data)) {
+                                apply_filtering();
+                                $(modal_dlg).modal('hide');
+                                swal('Got news for you', data.message, 'success');
+                            } else {
+                                swal('Got bad news for you', data.message, 'error');
+                            }
+                        });
+                });
+            });
 
     };
     reader.readAsText(file)
