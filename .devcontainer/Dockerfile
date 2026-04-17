@@ -1,6 +1,6 @@
-FROM mcr.microsoft.com/devcontainers/python:1-3.9-bullseye
+FROM mcr.microsoft.com/devcontainers/python:1-3.9-bookworm
 
-ENV PYTHONUNBUFFERED 1
+ENV PYTHONUNBUFFERED=1
 
 # [Optional] If your requirements rarely change, uncomment this section to add them to the image.
 # COPY requirements.txt /tmp/pip-tmp/
@@ -10,6 +10,3 @@ ENV PYTHONUNBUFFERED 1
 # [Optional] Uncomment this section to install additional OS packages.
 # RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
 #     && apt-get -y install --no-install-recommends <your-package-list-here>
-
-
-
