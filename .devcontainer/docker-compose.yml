@@ -47,6 +47,8 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - devcontainer
+    env_file:
+      - ../.env
     environment:
       POSTGRES_ADMIN_USER:
       POSTGRES_ADMIN_PASSWORD:

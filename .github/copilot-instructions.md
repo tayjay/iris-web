@@ -12,6 +12,13 @@
 - Frontend work happens in `ui`: use `npm install`, `npm run watch` for rebuild-on-change development, `npm run build` for production assets, and `npm run lint` before finishing UI changes.
 - End-to-end tests live in `e2e`: use `npm run test` for the full Playwright flow, or `npm run start`, `npm run e2e`, and `npm run stop` when debugging.
 
+## Environment
+- The expected local development environment is a Linux dev container running Debian GNU/Linux 12 (bookworm).
+- The default shell is `bash`, and repository work is expected under `/workspaces/iris-web`.
+- Common tools available on `PATH` include `git`, `docker`, `python3`, `pip3`, `node`, `npm`, and `eslint`.
+- Additional CLIs available include `apt`, `dpkg`, `curl`, `wget`, `ssh`, `scp`, `rsync`, `gpg`, `ps`, `lsof`, `netstat`, `top`, `tree`, `find`, `grep`, `zip`, `unzip`, `tar`, `gzip`, `bzip2`, and `xz`.
+- When opening links from this environment, use `"$BROWSER" <url>`.
+
 ## Conventions
 - Follow the project docs instead of restating them: see [README.md](../README.md), [architecture.md](../architecture.md), [CODESTYLE.md](../CODESTYLE.md), [CONFIGURATION.md](../CONFIGURATION.md), and [CONTRIBUTING.md](../CONTRIBUTING.md).
 - Python conventions that differ from common defaults: use f-strings, keep one import per line, prefix private names with `_`, keep `__init__.py` files minimal where practical, and name functions with a module-specific prefix such as `assets_create`.
