@@ -1,29 +1,27 @@
 # Project Guidelines
 
 ## Architecture
-- Backend Python code lives under `source/app` and follows a layered architecture: `app.blueprints` handles REST, GraphQL, templates, and Socket.IO entrypoints; `app.business` owns domain logic; `app.datamgmt` owns persistence. Keep changes inside the correct layer and do not bypass the blueprints -> business -> datamgmt flow.
-- Import boundaries are enforced from `pyproject.toml`. In particular, blueprints should not import `app.datamgmt` or `sqlalchemy`, and business code should not import `app.db` or blueprints.
-- Frontend assets in this repository live under `ui`. Reusable Svelte components belong in `ui/src/lib/components`, while page entrypoints belong in `ui/src/pages`. Built assets are written to `ui/dist` and mounted into the app container.
-- Use the Python API tests in `tests`, Playwright end-to-end tests in `e2e`, and deployment files under `deploy/` and the root Docker Compose files.
+- Backend Python code under `source/app` follows layered boundaries: `app.blueprints` (REST/GraphQL/templates/Socket.IO entrypoints) -> `app.business` (domain logic) -> `app.datamgmt` (persistence).
+- Respect import boundaries enforced from `pyproject.toml`: blueprints must not import `app.datamgmt` or `sqlalchemy`; business must not import `app.db` or blueprints.
+- Frontend code in this repository lives under `ui` (`ui/src` + `ui/public`); `ui/dist` is generated output.
+- Keep changes aligned with [architecture.md](../architecture.md). 
 
 ## Build and Test
-- Prefer the Docker development stack for app-level work: from the repository root run `docker compose --file docker-compose.dev.yml up --detach --wait`, and stop it with `docker compose down`.
-- Backend API tests use `unittest`, not `pytest`. Follow `tests/README.md`: from `tests`, create and activate a virtual environment, install `requirements.txt`, ensure the dev stack is running, then run `python -m unittest --verbose` or a fully qualified single test.
-- Frontend work happens in `ui`: use `npm install`, `npm run watch` for rebuild-on-change development, `npm run build` for production assets, and `npm run lint` before finishing UI changes.
-- End-to-end tests live in `e2e`: use `npm run test` for the full Playwright flow, or `npm run start`, `npm run e2e`, and `npm run stop` when debugging.
-
-## Environment
-- The expected local development environment is a Linux dev container running Debian GNU/Linux 12 (bookworm).
-- The default shell is `bash`, and repository work is expected under `/workspaces/iris-web`.
-- Common tools available on `PATH` include `git`, `docker`, `python3`, `pip3`, `node`, `npm`, and `eslint`.
-- Additional CLIs available include `apt`, `dpkg`, `curl`, `wget`, `ssh`, `scp`, `rsync`, `gpg`, `ps`, `lsof`, `netstat`, `top`, `tree`, `find`, `grep`, `zip`, `unzip`, `tar`, `gzip`, `bzip2`, and `xz`.
-- When opening links from this environment, use `"$BROWSER" <url>`.
+- Start the app-level dev stack from repo root with `docker compose --file docker-compose.dev.yml up --detach --wait`; stop with `docker compose down`.
+- Backend API tests use `unittest` (not `pytest`). Follow [tests/README.md](../tests/README.md) and run `python -m unittest --verbose` from `tests`.
+- Frontend workflow in `ui`: `npm install`, `npm run watch`, `npm run build`, `npm run lint`.
+- End-to-end workflow in `e2e`: `npm run test` (full flow) or `npm run start` + `npm run e2e` + `npm run stop`.
 
 ## Conventions
-- Follow the project docs instead of restating them: see [README.md](../README.md), [architecture.md](../architecture.md), [CODESTYLE.md](../CODESTYLE.md), [CONFIGURATION.md](../CONFIGURATION.md), and [CONTRIBUTING.md](../CONTRIBUTING.md).
-- Python conventions that differ from common defaults: use f-strings, keep one import per line, prefix private names with `_`, keep `__init__.py` files minimal where practical, and name functions with a module-specific prefix such as `assets_create`.
-- If a change affects database schema or persisted models, add an Alembic migration under `source/app/alembic`.
-- Mirror existing patterns when editing backend code: routes and request handling in `source/app/blueprints`, domain logic in `source/app/business`, and database access in `source/app/datamgmt`.
-- Check `CONFIGURATION.md` before adding or changing settings. Configuration precedence is Azure Key Vault, then environment variables, then config files.
-- The optional `frontend` service in `docker-compose.dev.yml` points at an external `../iris-frontend` checkout. Do not assume it is part of this workspace; frontend work in this repository is usually the `ui` application unless the task says otherwise.
-- Branch and PR workflow is documented in `CONTRIBUTING.md` and `CODESTYLE.md`; repository changes normally target `develop`, even though `master` remains the default release branch.
+- Link to canonical docs instead of duplicating policy: [README.md](../README.md), [architecture.md](../architecture.md), [CODESTYLE.md](../CODESTYLE.md), [CONFIGURATION.md](../CONFIGURATION.md), [CONTRIBUTING.md](../CONTRIBUTING.md).
+- Repo-specific Python conventions: prefer f-strings, one import per line, `_`-prefixed private names, minimal `__init__.py` files, and module-prefixed function names (for example `assets_create`).
+- If schema or persisted model behavior changes, include an Alembic migration under `source/app/alembic`.
+- Configuration precedence is Azure Key Vault -> environment variables -> config files.
+- The optional `frontend` profile in `docker-compose.dev.yml` points to an external `../iris-frontend` checkout; default frontend edits in this repo should target `ui`.
+- Prefer branch and PR workflow from [CONTRIBUTING.md](../CONTRIBUTING.md); typical target branch is `develop`.
+
+## Scoped Instructions
+- For backend Python edits, follow `.github/instructions/backend-python.instructions.md`.
+- For frontend UI edits, follow `.github/instructions/frontend-ui.instructions.md`.
+- For automated test edits, follow `.github/instructions/test-workflows.instructions.md`.
+- For Docker and Compose edits, follow `.github/instructions/docker-workflows.instructions.md`.

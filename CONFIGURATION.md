@@ -45,3 +45,4 @@ The POSTGRES section has the following configurations:
 
 - `IRIS_SECRET_KEY` - The secret key used by Flask.
 - `IRIS_SECURITY_PASSWORD_SALT` - ??
+- `IRIS_CASE_INSENSITIVE_ENTITY_MATCHING` - Set to `True` to treat asset and IOC values as case-insensitive when matching existing entities during IOC creation/import and alert escalation to cases. Default is `False`.

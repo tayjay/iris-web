@@ -17,6 +17,7 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 from sqlalchemy import and_
+from sqlalchemy import func
 
 from app.datamgmt.db_operations import db_create
 from app.datamgmt.db_operations import db_delete
@@ -37,6 +38,7 @@ from app.models.iocs import Tlp
 from app.models.authorization import User
 from app.models.pagination_parameters import PaginationParameters
 from app.util import add_obj_history_entry
+from app.util import is_case_insensitive_entity_matching_enabled
 
 
 relationship_model_map = {
@@ -160,8 +162,12 @@ def add_ioc(ioc: Ioc, user_id, caseid):
 
 
 def case_iocs_db_exists(ioc: Ioc):
+    ioc_value_filter = Ioc.ioc_value == ioc.ioc_value
+    if is_case_insensitive_entity_matching_enabled():
+        ioc_value_filter = func.lower(Ioc.ioc_value) == func.lower(ioc.ioc_value)
+
     iocs = Ioc.query.filter(Ioc.case_id == ioc.case_id,
-                            Ioc.ioc_value == ioc.ioc_value,
+                            ioc_value_filter,
                             Ioc.ioc_type_id == ioc.ioc_type_id)
     return iocs.first() is not None
 

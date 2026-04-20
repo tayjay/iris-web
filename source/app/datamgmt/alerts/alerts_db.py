@@ -72,6 +72,7 @@ from app.models.alerts import Severity
 from app.models.authorization import User
 from app.schema.marshables import EventSchema
 from app.util import add_obj_history_entry
+from app.util import is_case_insensitive_entity_matching_enabled
 from app.datamgmt.db_operations import db_create, db_delete
 
 relationship_model_map = {
@@ -305,9 +306,13 @@ def get_unspecified_event_category():
 
 
 def _alerts_get_matching_case_ioc(case_id: int, alert_ioc: Ioc) -> Optional[Ioc]:
+    ioc_value_filter = Ioc.ioc_value == alert_ioc.ioc_value
+    if is_case_insensitive_entity_matching_enabled():
+        ioc_value_filter = func.lower(Ioc.ioc_value) == func.lower(alert_ioc.ioc_value)
+
     return Ioc.query.filter(
         Ioc.case_id == case_id,
-        Ioc.ioc_value == alert_ioc.ioc_value,
+        ioc_value_filter,
         Ioc.ioc_type_id == alert_ioc.ioc_type_id
     ).first()
 
@@ -350,8 +355,12 @@ def _alerts_add_selected_iocs_to_case(alert: Alert, case_id: int, iocs_list: Lis
 
 
 def _alerts_get_matching_case_asset(case_id: int, alert_asset: CaseAssets) -> Optional[CaseAssets]:
+    asset_name_filter = CaseAssets.asset_name == alert_asset.asset_name
+    if is_case_insensitive_entity_matching_enabled():
+        asset_name_filter = func.lower(CaseAssets.asset_name) == func.lower(alert_asset.asset_name)
+
     return CaseAssets.query.filter(and_(
-        CaseAssets.asset_name == alert_asset.asset_name,
+        asset_name_filter,
         CaseAssets.asset_type_id == alert_asset.asset_type_id,
         CaseAssets.case_id == case_id
     )).first()

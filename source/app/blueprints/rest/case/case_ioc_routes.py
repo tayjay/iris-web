@@ -24,6 +24,7 @@ import marshmallow
 from flask import Blueprint
 from flask import request
 from marshmallow import ValidationError
+from sqlalchemy import func
 
 from app.db import db
 from app.blueprints.rest.case_comments import case_comment_update
@@ -60,6 +61,7 @@ from app.blueprints.responses import response_error
 from app.blueprints.responses import response_success
 from app.iris_engine.module_handler.module_handler import call_deprecated_on_preload_modules_hook
 from app.iris_engine.access_control.utils import ac_get_fast_user_cases_access
+from app.util import is_case_insensitive_entity_matching_enabled
 
 case_ioc_rest_blueprint = Blueprint('case_ioc_rest', __name__)
 
@@ -98,9 +100,13 @@ def _merge_csv_tags(existing_tags, incoming_tags):
 
 
 def _get_existing_ioc(caseid, ioc_value, ioc_type_id):
+    ioc_value_filter = Ioc.ioc_value == ioc_value
+    if is_case_insensitive_entity_matching_enabled():
+        ioc_value_filter = func.lower(Ioc.ioc_value) == func.lower(ioc_value)
+
     return Ioc.query.filter(
         Ioc.case_id == caseid,
-        Ioc.ioc_value == ioc_value,
+        ioc_value_filter,
         Ioc.ioc_type_id == ioc_type_id
     ).first()
 

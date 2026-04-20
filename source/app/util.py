@@ -28,6 +28,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives import hmac
 from sqlalchemy.orm.attributes import flag_modified
 from flask import current_app
+from flask import has_app_context
 
 from app.db import db
 from app.blueprints.iris_user import iris_current_user
@@ -99,3 +100,14 @@ def hmac_verify(signature_enc, data):
         return True
     except InvalidSignature:
         return False
+
+
+def is_case_insensitive_entity_matching_enabled() -> bool:
+    if not has_app_context():
+        return False
+
+    value = current_app.config.get('CASE_INSENSITIVE_ENTITY_MATCHING', False)
+    if isinstance(value, str):
+        return value.lower() == 'true'
+
+    return bool(value)
