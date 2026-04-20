@@ -132,6 +132,49 @@ def _authenticate_password(form, username, password):
     return _render_template_login(form, "Wrong credentials. Please try again.")
 
 
+def _get_oidc_redirect_uri():
+    xf_proto = request.headers.get("X-Forwarded-Proto")
+    xf_host = request.headers.get("X-Forwarded-Host")
+
+    if xf_proto:
+        xf_proto = xf_proto.split(",")[0].strip()
+    if xf_host:
+        xf_host = xf_host.split(",")[0].strip()
+
+    if xf_proto and xf_host:
+        return f"{xf_proto}://{xf_host}/oidc-authorize"
+
+    return url_for("login.oidc_authorise", _external=True)
+
+
+def _normalize_oidc_groups(group_claim):
+    if group_claim is None:
+        return []
+
+    if isinstance(group_claim, str):
+        return [group_claim]
+
+    if isinstance(group_claim, (list, tuple, set)):
+        return [str(group_name) for group_name in group_claim]
+
+    return []
+
+
+def _oidc_groups_overage_detected(claims, usergroup_field):
+    if not isinstance(claims, dict):
+        return False
+
+    # Entra may omit groups and signal overage with hasgroups/_claim_names.
+    if usergroup_field and usergroup_field != "groups":
+        return False
+
+    claim_names = claims.get("_claim_names")
+
+    return bool(claims.get("hasgroups")) or (
+        isinstance(claim_names, dict) and "groups" in claim_names
+    )
+
+
 # Authenticate user
 if app.config.get("AUTHENTICATION_TYPE") in ["local", "ldap", "oidc"]:
 
@@ -177,18 +220,7 @@ if is_authentication_oidc():
         session["oidc_state"] = rndstr()
         session["oidc_nonce"] = rndstr()
 
-        xf_proto = request.headers.get("X-Forwarded-Proto")
-        xf_host = request.headers.get("X-Forwarded-Host")
-
-        if xf_proto:
-            xf_proto = xf_proto.split(",")[0].strip()
-        if xf_host:
-            xf_host = xf_host.split(",")[0].strip()
-
-        redirect_uri = url_for("login.oidc_authorise", _external=True)
-
-        if xf_proto and xf_host:
-            redirect_uri = f"{xf_proto}://{xf_host}/oidc-authorize"
+        redirect_uri = _get_oidc_redirect_uri()
 
         args = {
             "client_id": oidc_client.client_id,
@@ -213,9 +245,9 @@ if is_authentication_oidc():
             AuthorizationResponse, info=request.args, sformat="dict"
         )
 
-        if auth_resp["state"] != session["oidc_state"]:
+        if auth_resp["state"] != session.get("oidc_state"):
             track_activity(
-                f"OIDC session state '{auth_resp['state']}' does not match authorization state '{session['oidc_state']}'",
+                f"OIDC session state '{auth_resp['state']}' does not match authorization state '{session.get('oidc_state')}'",
                 ctx_less=True,
                 display_in_ui=False,
             )
@@ -223,19 +255,8 @@ if is_authentication_oidc():
 
         args = {
             "code": auth_resp["code"],
+            "redirect_uri": _get_oidc_redirect_uri(),
         }
-
-        xf_proto = request.headers.get("X-Forwarded-Proto")
-        xf_host = request.headers.get("X-Forwarded-Host")
-
-        if xf_proto:
-            xf_proto = xf_proto.split(",")[0].strip()
-        if xf_host:
-            xf_host = xf_host.split(",")[0].strip()
-
-        if xf_proto and xf_host:
-            public_base = f"{xf_proto}://{xf_host}"
-            args["redirect_uri"] = f"{public_base}/oidc-authorize"
 
         access_token_resp = oidc_client.do_access_token_request(
             state=auth_resp["state"], request_args=args
@@ -250,6 +271,19 @@ if is_authentication_oidc():
         try:
             if "id_token" in access_token_resp and access_token_resp["id_token"]:
                 claims = access_token_resp["id_token"]
+                expected_nonce = session.get("oidc_nonce")
+                received_nonce = claims.get("nonce")
+
+                if expected_nonce and received_nonce != expected_nonce:
+                    log.error(
+                        "OIDC authentication failed: id_token nonce does not match authorization nonce"
+                    )
+                    track_activity(
+                        "OIDC authentication failed: id_token nonce does not match authorization nonce",
+                        ctx_less=True,
+                        display_in_ui=False,
+                    )
+                    return redirect(url_for("login.login"))
             else:
                 if "access_token" not in access_token_resp:
                     err = access_token_resp.get("error")
@@ -273,9 +307,9 @@ if is_authentication_oidc():
             user_name = claims.get(email_field) or claims.get(username_field)
 
             if usergroup_field is not None:
-                user_group = claims.get(usergroup_field)
+                user_group = _normalize_oidc_groups(claims.get(usergroup_field))
             else:
-                user_group = None
+                user_group = []
 
             if not user_login:
                 log.error(
@@ -330,6 +364,14 @@ if is_authentication_oidc():
 
         if user and not user.active:
             return response_error("User not active in IRIS", 403)
+
+        if user and userroles_mapping_field and _oidc_groups_overage_detected(
+            claims, usergroup_field
+        ):
+            return response_error(
+                "OIDC response uses group overage claims. Configure Entra groups/app roles for tokens or reduce emitted group claims.",
+                403,
+            )
 
         if user and (not user_group) and userroles_mapping_field:
             return response_error(
