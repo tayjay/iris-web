@@ -16,6 +16,9 @@
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
+from collections import namedtuple
+from urllib.parse import urlparse
+
 from sqlalchemy import and_
 from sqlalchemy import func
 
@@ -50,6 +53,68 @@ relationship_model_map = {
     'alerts': Alert,
     'ioc_type': IocType
 }
+
+_DOMAIN_LIKE_TYPES = {'domain', 'hostname'}
+_URL_LIKE_TYPES = {'url', 'uri'}
+_IocLinkRow = namedtuple('IocLinkRow', ['case_id', 'case_name', 'client_name'])
+
+
+def _extract_hostname_from_ioc_value(ioc_value: str) -> str | None:
+    if not ioc_value:
+        return None
+
+    raw_value = ioc_value.strip()
+    if not raw_value:
+        return None
+
+    parsed = urlparse(raw_value)
+    hostname = parsed.hostname
+
+    # Accept URL values without explicit scheme, e.g. example.com/path.
+    if hostname is None:
+        parsed = urlparse(f'//{raw_value}')
+        hostname = parsed.hostname
+
+    if hostname is None:
+        return None
+
+    return hostname.rstrip('.').lower()
+
+
+def _to_ioc_link_row(row) -> _IocLinkRow:
+    return _IocLinkRow(case_id=row.case_id, case_name=row.case_name, client_name=row.client_name)
+
+
+def _extract_left_side_from_composite_ioc(ioc_type_name: str, ioc_value: str) -> tuple[str, str] | None:
+    if not ioc_type_name or '|' not in ioc_type_name:
+        return None
+
+    if not ioc_value or '|' not in ioc_value:
+        return None
+
+    left_type_name = ioc_type_name.split('|', 1)[0].strip().lower()
+    left_value = ioc_value.split('|', 1)[0].strip()
+
+    if not left_type_name or not left_value:
+        return None
+
+    return left_type_name, left_value
+
+
+def _extract_right_side_from_composite_ioc(ioc_type_name: str, ioc_value: str) -> tuple[str, str] | None:
+    if not ioc_type_name or '|' not in ioc_type_name:
+        return None
+
+    if not ioc_value or '|' not in ioc_value:
+        return None
+
+    right_type_name = ioc_type_name.split('|', 1)[1].strip().lower()
+    right_value = ioc_value.split('|', 1)[1].strip()
+
+    if not right_type_name or not right_value:
+        return None
+
+    return right_type_name, right_value
 
 
 def get_iocs(case_identifier) -> list[Ioc]:
@@ -133,14 +198,20 @@ def get_ioc_links(ioc_id, user_search_limitations):
         search_condition = and_(Cases.case_id.in_([]))
 
     ioc = Ioc.query.filter(Ioc.ioc_id == ioc_id).first()
+    if ioc is None:
+        return []
 
     # Search related iocs based on value and type
+    ioc_value_filter = Ioc.ioc_value == ioc.ioc_value
+    if is_case_insensitive_entity_matching_enabled():
+        ioc_value_filter = func.lower(Ioc.ioc_value) == func.lower(ioc.ioc_value)
+
     related_iocs = (Ioc.query.with_entities(
         Cases.case_id,
         Cases.name.label('case_name'),
         Client.name.label('client_name')
     ).filter(and_(
-        Ioc.ioc_value == ioc.ioc_value,
+        ioc_value_filter,
         Ioc.ioc_type_id == ioc.ioc_type_id,
         Ioc.ioc_id != ioc_id,
         search_condition)
@@ -148,7 +219,151 @@ def get_ioc_links(ioc_id, user_search_limitations):
      .join(Cases.client)
      .all())
 
-    return related_iocs
+    links = [_to_ioc_link_row(row) for row in related_iocs]
+    current_type = (ioc.ioc_type.type_name if ioc.ioc_type else '').lower()
+
+    # Add cross-type links between URL-like and domain-like IOC values.
+    if current_type in _URL_LIKE_TYPES:
+        hostname = _extract_hostname_from_ioc_value(ioc.ioc_value)
+        if hostname:
+            host_related_iocs = (Ioc.query.with_entities(
+                Cases.case_id,
+                Cases.name.label('case_name'),
+                Client.name.label('client_name')
+            ).join(Ioc.ioc_type)
+             .filter(and_(
+                func.lower(IocType.type_name).in_(_DOMAIN_LIKE_TYPES),
+                func.lower(Ioc.ioc_value) == hostname,
+                Ioc.ioc_id != ioc_id,
+                search_condition)
+            ).join(Ioc.case)
+             .join(Cases.client)
+             .all())
+
+            links.extend(_to_ioc_link_row(row) for row in host_related_iocs)
+
+    elif current_type in _DOMAIN_LIKE_TYPES:
+        normalized_domain = (ioc.ioc_value or '').strip().rstrip('.').lower()
+        if normalized_domain:
+            url_candidates = (Ioc.query.with_entities(
+                Cases.case_id,
+                Cases.name.label('case_name'),
+                Client.name.label('client_name'),
+                Ioc.ioc_value
+            ).join(Ioc.ioc_type)
+             .filter(and_(
+                func.lower(IocType.type_name).in_(_URL_LIKE_TYPES),
+                Ioc.ioc_id != ioc_id,
+                search_condition)
+            ).join(Ioc.case)
+             .join(Cases.client)
+             .all())
+
+            for candidate in url_candidates:
+                if _extract_hostname_from_ioc_value(candidate.ioc_value) == normalized_domain:
+                    links.append(_to_ioc_link_row(candidate))
+
+    # Add links between composite IOC values (e.g. filename|sha256) and their left-side base type.
+    left_side = _extract_left_side_from_composite_ioc(current_type, ioc.ioc_value)
+    right_side = _extract_right_side_from_composite_ioc(current_type, ioc.ioc_value)
+
+    if left_side:
+        left_type_name, left_value = left_side
+        left_value_filter = Ioc.ioc_value == left_value
+        if is_case_insensitive_entity_matching_enabled():
+            left_value_filter = func.lower(Ioc.ioc_value) == func.lower(left_value)
+
+        base_type_related_iocs = (Ioc.query.with_entities(
+            Cases.case_id,
+            Cases.name.label('case_name'),
+            Client.name.label('client_name')
+        ).join(Ioc.ioc_type)
+         .filter(and_(
+            func.lower(IocType.type_name) == left_type_name,
+            left_value_filter,
+            Ioc.ioc_id != ioc_id,
+            search_condition)
+        ).join(Ioc.case)
+         .join(Cases.client)
+         .all())
+
+        links.extend(_to_ioc_link_row(row) for row in base_type_related_iocs)
+
+    if right_side:
+        right_type_name, right_value = right_side
+        right_value_filter = Ioc.ioc_value == right_value
+        if is_case_insensitive_entity_matching_enabled():
+            right_value_filter = func.lower(Ioc.ioc_value) == func.lower(right_value)
+
+        base_type_related_iocs = (Ioc.query.with_entities(
+            Cases.case_id,
+            Cases.name.label('case_name'),
+            Client.name.label('client_name')
+        ).join(Ioc.ioc_type)
+         .filter(and_(
+            func.lower(IocType.type_name) == right_type_name,
+            right_value_filter,
+            Ioc.ioc_id != ioc_id,
+            search_condition)
+        ).join(Ioc.case)
+         .join(Cases.client)
+         .all())
+
+        links.extend(_to_ioc_link_row(row) for row in base_type_related_iocs)
+
+    elif current_type:
+        composite_prefix = f'{current_type}|%'
+        left_composite_filter = func.split_part(Ioc.ioc_value, '|', 1) == ioc.ioc_value
+        if is_case_insensitive_entity_matching_enabled():
+            left_composite_filter = func.lower(func.split_part(Ioc.ioc_value, '|', 1)) == func.lower(ioc.ioc_value)
+
+        composite_related_iocs = (Ioc.query.with_entities(
+            Cases.case_id,
+            Cases.name.label('case_name'),
+            Client.name.label('client_name')
+        ).join(Ioc.ioc_type)
+         .filter(and_(
+            func.lower(IocType.type_name).like(composite_prefix),
+            left_composite_filter,
+            Ioc.ioc_id != ioc_id,
+            search_condition)
+        ).join(Ioc.case)
+         .join(Cases.client)
+         .all())
+
+        links.extend(_to_ioc_link_row(row) for row in composite_related_iocs)
+
+        composite_suffix = f'%|{current_type}'
+        right_composite_filter = func.split_part(Ioc.ioc_value, '|', 2) == ioc.ioc_value
+        if is_case_insensitive_entity_matching_enabled():
+            right_composite_filter = func.lower(func.split_part(Ioc.ioc_value, '|', 2)) == func.lower(ioc.ioc_value)
+
+        composite_related_iocs = (Ioc.query.with_entities(
+            Cases.case_id,
+            Cases.name.label('case_name'),
+            Client.name.label('client_name')
+        ).join(Ioc.ioc_type)
+         .filter(and_(
+            func.lower(IocType.type_name).like(composite_suffix),
+            right_composite_filter,
+            Ioc.ioc_id != ioc_id,
+            search_condition)
+        ).join(Ioc.case)
+         .join(Cases.client)
+         .all())
+
+        links.extend(_to_ioc_link_row(row) for row in composite_related_iocs)
+
+    deduped_links = []
+    seen_cases = set()
+    for row in links:
+        dedupe_key = (row.case_id, row.case_name, row.client_name)
+        if dedupe_key in seen_cases:
+            continue
+        seen_cases.add(dedupe_key)
+        deduped_links.append(row)
+
+    return deduped_links
 
 
 def add_ioc(ioc: Ioc, user_id, caseid):

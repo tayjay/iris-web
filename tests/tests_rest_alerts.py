@@ -562,3 +562,208 @@ class TestsRestAlerts(TestCase):
         identifier = response['alert_id']
         response = user.get(f'/api/v2/alerts/{identifier}/related-alerts')
         self.assertEqual(404, response.status_code)
+
+    def test_create_alert_should_add_closed_case_context_tag_on_match(self):
+        case_identifier = self._subject.create_dummy_case()
+        self._subject.create(f'/api/v2/cases/{case_identifier}/assets', {
+            'asset_type_id': 1,
+            'asset_name': 'host-closed-case'
+        })
+        self._subject.create(f'/api/v2/cases/{case_identifier}/iocs', {
+            'ioc_type_id': 1,
+            'ioc_tlp_id': 2,
+            'ioc_value': '198.51.100.12',
+            'ioc_description': 'closed case indicator',
+            'ioc_tags': 'historic'
+        })
+        self._subject.create(f'/manage/cases/close/{case_identifier}', {})
+
+        response = self._subject.create('/api/v2/alerts', {
+            'alert_title': 'closed context alert',
+            'alert_severity_id': 4,
+            'alert_status_id': 3,
+            'alert_customer_id': 1,
+            'alert_assets': [{
+                'asset_name': 'host-closed-case',
+                'asset_description': 'Matching closed case asset',
+                'asset_type_id': 1,
+                'asset_ip': '198.51.100.12',
+                'asset_domain': '',
+                'asset_tags': 'match'
+            }],
+            'alert_iocs': [{
+                'ioc_value': '198.51.100.12',
+                'ioc_description': 'Matching closed case IOC',
+                'ioc_tlp_id': 1,
+                'ioc_type_id': 1,
+                'ioc_tags': 'match'
+            }]
+        }).json()
+
+        self.assertIn('seen-in-closed-case', response['alert_tags'])
+        self.assertIn('closed_case_hits', response['alert_context'])
+        self.assertEqual(case_identifier, response['alert_context']['closed_case_hits'][0]['case_id'])
+
+    def test_get_case_correlation_should_return_open_and_closed_matches(self):
+        open_case_identifier = self._subject.create_dummy_case()
+        closed_case_identifier = self._subject.create_dummy_case()
+
+        self._subject.create(f'/api/v2/cases/{open_case_identifier}/assets', {
+            'asset_type_id': 1,
+            'asset_name': 'shared-host'
+        })
+        self._subject.create(f'/api/v2/cases/{closed_case_identifier}/iocs', {
+            'ioc_type_id': 1,
+            'ioc_tlp_id': 2,
+            'ioc_value': '203.0.113.42',
+            'ioc_description': 'Shared IOC',
+            'ioc_tags': 'shared'
+        })
+        self._subject.create(f'/manage/cases/close/{closed_case_identifier}', {})
+
+        alert = self._subject.create('/api/v2/alerts', {
+            'alert_title': 'correlation alert',
+            'alert_severity_id': 4,
+            'alert_status_id': 3,
+            'alert_customer_id': 1,
+            'alert_assets': [{
+                'asset_name': 'shared-host',
+                'asset_description': 'shared host',
+                'asset_type_id': 1,
+                'asset_ip': '203.0.113.10',
+                'asset_domain': '',
+                'asset_tags': 'shared'
+            }],
+            'alert_iocs': [{
+                'ioc_value': '203.0.113.42',
+                'ioc_description': 'shared ioc',
+                'ioc_tlp_id': 1,
+                'ioc_type_id': 1,
+                'ioc_tags': 'shared'
+            }]
+        }).json()
+
+        response = self._subject.get(f"/api/v2/alerts/{alert['alert_id']}/case-correlation").json()
+        self.assertTrue(response['has_open_match'])
+        self.assertTrue(response['has_closed_match'])
+
+        open_case_ids = [item['case_id'] for item in response['open_case_matches']]
+        closed_case_ids = [item['case_id'] for item in response['closed_case_matches']]
+        self.assertIn(open_case_identifier, open_case_ids)
+        self.assertIn(closed_case_identifier, closed_case_ids)
+
+    def test_merge_correlation_should_merge_alert_into_multiple_open_cases(self):
+        case_identifier_1 = self._subject.create_dummy_case()
+        case_identifier_2 = self._subject.create_dummy_case()
+
+        self._subject.create(f'/api/v2/cases/{case_identifier_1}/assets', {
+            'asset_type_id': 1,
+            'asset_name': 'multi-case-host'
+        })
+        self._subject.create(f'/api/v2/cases/{case_identifier_2}/iocs', {
+            'ioc_type_id': 1,
+            'ioc_tlp_id': 2,
+            'ioc_value': '192.0.2.55',
+            'ioc_description': 'Multi case IOC',
+            'ioc_tags': 'multi'
+        })
+
+        alert = self._subject.create('/api/v2/alerts', {
+            'alert_title': 'multi case merge',
+            'alert_severity_id': 4,
+            'alert_status_id': 3,
+            'alert_customer_id': 1,
+            'alert_assets': [{
+                'asset_name': 'multi-case-host',
+                'asset_description': 'match host',
+                'asset_type_id': 1,
+                'asset_ip': '192.0.2.55',
+                'asset_domain': '',
+                'asset_tags': 'multi'
+            }],
+            'alert_iocs': [{
+                'ioc_value': '192.0.2.55',
+                'ioc_description': 'match ioc',
+                'ioc_tlp_id': 1,
+                'ioc_type_id': 1,
+                'ioc_tags': 'multi'
+            }]
+        }).json()
+
+        response = self._subject.create(f"/api/v2/alerts/{alert['alert_id']}/merge-correlation", {
+            'target_case_ids': [case_identifier_1, case_identifier_2],
+            'import_as_event': False,
+            'case_tags': 'correlation-merge',
+            'note': 'Analyst accepted case matches'
+        }).json()
+
+        self.assertEqual(sorted([case_identifier_1, case_identifier_2]), sorted(response['merged_case_ids']))
+
+        updated_alert = self._subject.get(f"/api/v2/alerts/{alert['alert_id']}").json()
+        linked_case_ids = sorted(updated_alert['cases'])
+        self.assertEqual(sorted([case_identifier_1, case_identifier_2]), linked_case_ids)
+
+    def test_connected_preview_and_escalate_should_merge_all_connected_alerts(self):
+        alert_one = self._subject.create('/api/v2/alerts', {
+            'alert_title': 'entity pivot alert one',
+            'alert_severity_id': 4,
+            'alert_status_id': 3,
+            'alert_customer_id': 1,
+            'alert_iocs': [{
+                'ioc_value': '203.0.113.200',
+                'ioc_description': 'entity pivot ioc',
+                'ioc_tlp_id': 1,
+                'ioc_type_id': 1,
+                'ioc_tags': 'pivot'
+            }]
+        }).json()
+
+        alert_two = self._subject.create('/api/v2/alerts', {
+            'alert_title': 'entity pivot alert two',
+            'alert_severity_id': 4,
+            'alert_status_id': 3,
+            'alert_customer_id': 1,
+            'alert_iocs': [{
+                'ioc_value': '203.0.113.200',
+                'ioc_description': 'entity pivot ioc',
+                'ioc_tlp_id': 1,
+                'ioc_type_id': 1,
+                'ioc_tags': 'pivot'
+            }]
+        }).json()
+
+        preview = self._subject.create('/api/v2/alerts/connected/preview', {
+            'customer_id': 1,
+            'entity': {
+                'kind': 'ioc',
+                'ioc_value': '203.0.113.200',
+                'ioc_type_id': 1
+            },
+            'max_alerts': 100
+        }).json()
+
+        self.assertEqual(2, preview['connected_alert_count'])
+        self.assertIn(alert_one['alert_id'], preview['connected_alert_ids'])
+        self.assertIn(alert_two['alert_id'], preview['connected_alert_ids'])
+
+        escalated = self._subject.create('/api/v2/alerts/connected/escalate', {
+            'customer_id': 1,
+            'entity': {
+                'kind': 'ioc',
+                'ioc_value': '203.0.113.200',
+                'ioc_type_id': 1
+            },
+            'connected_alert_ids': preview['connected_alert_ids'],
+            'case_title': 'Entity Pivot Case',
+            'case_tags': 'entity-pivot',
+            'import_as_event': False
+        }).json()
+
+        self.assertIsNotNone(escalated['case_id'])
+        self.assertEqual(2, len(escalated['merged_alert_ids']))
+
+        case_identifier = escalated['case_id']
+        alert_one_updated = self._subject.get(f"/api/v2/alerts/{alert_one['alert_id']}").json()
+        alert_two_updated = self._subject.get(f"/api/v2/alerts/{alert_two['alert_id']}").json()
+        self.assertIn(case_identifier, alert_one_updated['cases'])
+        self.assertIn(case_identifier, alert_two_updated['cases'])

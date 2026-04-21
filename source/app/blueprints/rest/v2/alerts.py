@@ -44,6 +44,11 @@ from app.business.alerts import alerts_get
 from app.business.alerts import alerts_update
 from app.business.alerts import alerts_delete
 from app.business.alerts import alerts_get_related
+from app.business.alerts import alerts_get_case_correlation
+from app.business.alerts import alerts_merge_into_cases
+from app.business.alerts import alerts_get_connected_preview
+from app.business.alerts import alerts_create_case_from_connected
+from app.business.alerts import alerts_get_unauthorized_case_ids
 from app.models.errors import BusinessProcessingError
 from app.models.errors import ObjectNotFoundError
 
@@ -224,6 +229,103 @@ class AlertsOperations:
         except ObjectNotFoundError:
             return response_api_not_found()
 
+    def get_case_correlation(self, identifier):
+        try:
+            alert = alerts_get(
+                iris_current_user,
+                (session.get('permissions') or 0),
+                identifier,
+                fallback_customer_access=ac_current_user_has_customer_access
+            )
+
+            include_closed = request.args.get('include_closed', 'true').lower() == 'true'
+            max_cases = request.args.get('max_cases', 20, type=int)
+            if max_cases <= 0:
+                max_cases = 20
+
+            return response_api_success(
+                alerts_get_case_correlation(alert, include_closed=include_closed, max_cases=max_cases)
+            )
+        except ObjectNotFoundError:
+            return response_api_not_found()
+
+    def merge_correlation(self, identifier):
+        try:
+            alert = alerts_get(
+                iris_current_user,
+                (session.get('permissions') or 0),
+                identifier,
+                fallback_customer_access=ac_current_user_has_customer_access
+            )
+
+            request_data = request.get_json() or {}
+            target_case_ids = request_data.get('target_case_ids', [])
+            if not isinstance(target_case_ids, list) or not target_case_ids:
+                return response_api_error('target_case_ids must be a non-empty list')
+
+            unauthorized_case_ids = alerts_get_unauthorized_case_ids(iris_current_user.id, target_case_ids)
+            if unauthorized_case_ids:
+                return response_api_error(
+                    f'User not entitled to merge alerts for case {unauthorized_case_ids[0]}',
+                    status=403
+                )
+
+            result = alerts_merge_into_cases(
+                alert,
+                target_case_ids=target_case_ids,
+                import_as_event=request_data.get('import_as_event', True),
+                case_tags=request_data.get('case_tags', ''),
+                note=request_data.get('note', '')
+            )
+            return response_api_success(result)
+        except ObjectNotFoundError:
+            return response_api_not_found()
+
+    def connected_preview(self):
+        request_data = request.get_json() or {}
+        customer_id = request_data.get('customer_id')
+        entity = request_data.get('entity') or {}
+        max_alerts = request_data.get('max_alerts', 100)
+
+        if customer_id is None:
+            return response_api_error('customer_id is required')
+        if not ac_current_user_has_customer_access(customer_id):
+            return response_api_error('User not entitled to access this customer')
+        if not isinstance(entity, dict):
+            return response_api_error('entity must be an object')
+
+        return response_api_success(
+            alerts_get_connected_preview(customer_id, entity, max_alerts=max_alerts)
+        )
+
+    def connected_escalate(self):
+        request_data = request.get_json() or {}
+        customer_id = request_data.get('customer_id')
+        entity = request_data.get('entity') or {}
+        case_title = request_data.get('case_title')
+        connected_alert_ids = request_data.get('connected_alert_ids', [])
+
+        if customer_id is None:
+            return response_api_error('customer_id is required')
+        if not ac_current_user_has_customer_access(customer_id):
+            return response_api_error('User not entitled to access this customer')
+        if not isinstance(entity, dict):
+            return response_api_error('entity must be an object')
+        if not isinstance(connected_alert_ids, list) or not connected_alert_ids:
+            return response_api_error('connected_alert_ids must be a non-empty list')
+        if not case_title:
+            return response_api_error('case_title is required')
+
+        result = alerts_create_case_from_connected(
+            customer_id=customer_id,
+            entity=entity,
+            connected_alert_ids=connected_alert_ids,
+            case_title=case_title,
+            case_tags=request_data.get('case_tags', ''),
+            import_as_event=request_data.get('import_as_event', True)
+        )
+        return response_api_success(result)
+
     def update(self, identifier):
         try:
             alert = alerts_get(
@@ -318,3 +420,27 @@ def delete_alert(identifier):
 @ac_api_requires(Permissions.alerts_read)
 def get_related_alerts(identifier):
     return alerts_operations.get_related_alerts(identifier)
+
+
+@alerts_blueprint.get('/<int:identifier>/case-correlation')
+@ac_api_requires(Permissions.alerts_read)
+def get_case_correlation(identifier):
+    return alerts_operations.get_case_correlation(identifier)
+
+
+@alerts_blueprint.post('/<int:identifier>/merge-correlation')
+@ac_api_requires(Permissions.alerts_write)
+def merge_correlation(identifier):
+    return alerts_operations.merge_correlation(identifier)
+
+
+@alerts_blueprint.post('/connected/preview')
+@ac_api_requires(Permissions.alerts_read)
+def connected_preview():
+    return alerts_operations.connected_preview()
+
+
+@alerts_blueprint.post('/connected/escalate')
+@ac_api_requires(Permissions.alerts_write)
+def connected_escalate():
+    return alerts_operations.connected_escalate()

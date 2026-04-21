@@ -23,6 +23,8 @@ from datetime import timedelta
 from typing import List
 from typing import Optional
 from typing import Tuple
+from typing import Dict
+from typing import Any
 
 from sqlalchemy import desc
 from sqlalchemy import asc
@@ -1106,6 +1108,257 @@ def _get_alerts_status_identifiers(status_names):
         AlertStatus.status_id
     ).filter(AlertStatus.status_name.in_(status_names)).all()
     return [status_id for status_id, in alert_status_ids]
+
+
+def _build_alert_asset_pairs(alert: Alert) -> set[tuple[str, int]]:
+    return {
+        (asset.asset_name, asset.asset_type_id)
+        for asset in alert.assets
+        if asset.asset_name and asset.asset_type_id is not None
+    }
+
+
+def _build_alert_ioc_pairs(alert: Alert) -> set[tuple[str, int]]:
+    return {
+        (ioc.ioc_value, ioc.ioc_type_id)
+        for ioc in alert.iocs
+        if ioc.ioc_value and ioc.ioc_type_id is not None
+    }
+
+
+def get_alert_case_matches(alert: Alert, include_closed: bool = True, max_cases: int = 20) -> Dict[str, Any]:
+    asset_pairs = _build_alert_asset_pairs(alert)
+    ioc_pairs = _build_alert_ioc_pairs(alert)
+
+    result = {
+        'alert_id': alert.alert_id,
+        'customer_id': alert.alert_customer_id,
+        'open_case_matches': [],
+        'closed_case_matches': [],
+        'has_open_match': False,
+        'has_closed_match': False
+    }
+
+    if not asset_pairs and not ioc_pairs:
+        return result
+
+    matches_by_case = {}
+
+    if asset_pairs:
+        asset_matches = (
+            db.session.query(CaseAssets.case_id, CaseAssets.asset_name, CaseAssets.asset_type_id,
+                             Cases.name, Cases.close_date)
+            .join(CaseAssets.case)
+            .filter(
+                Cases.client_id == alert.alert_customer_id,
+                tuple_(CaseAssets.asset_name, CaseAssets.asset_type_id).in_(asset_pairs)
+            )
+            .all()
+        )
+
+        for case_id, asset_name, asset_type_id, case_name, close_date in asset_matches:
+            case_entry = matches_by_case.setdefault(case_id, {
+                'case_id': case_id,
+                'case_name': case_name,
+                'close_date': close_date,
+                'matched_assets': [],
+                'matched_iocs': []
+            })
+            asset_match = {'asset_name': asset_name, 'asset_type_id': asset_type_id}
+            if asset_match not in case_entry['matched_assets']:
+                case_entry['matched_assets'].append(asset_match)
+
+    if ioc_pairs:
+        ioc_matches = (
+            db.session.query(Ioc.case_id, Ioc.ioc_value, Ioc.ioc_type_id, Cases.name, Cases.close_date)
+            .join(Ioc.case)
+            .filter(
+                Cases.client_id == alert.alert_customer_id,
+                tuple_(Ioc.ioc_value, Ioc.ioc_type_id).in_(ioc_pairs)
+            )
+            .all()
+        )
+
+        for case_id, ioc_value, ioc_type_id, case_name, close_date in ioc_matches:
+            case_entry = matches_by_case.setdefault(case_id, {
+                'case_id': case_id,
+                'case_name': case_name,
+                'close_date': close_date,
+                'matched_assets': [],
+                'matched_iocs': []
+            })
+            ioc_match = {'ioc_value': ioc_value, 'ioc_type_id': ioc_type_id}
+            if ioc_match not in case_entry['matched_iocs']:
+                case_entry['matched_iocs'].append(ioc_match)
+
+    scored_matches = []
+    for case_entry in matches_by_case.values():
+        score = (len(case_entry['matched_iocs']) * 5) + (len(case_entry['matched_assets']) * 3)
+        scored_matches.append({
+            **case_entry,
+            'score': score,
+            'match_mode': 'either_or'
+        })
+
+    scored_matches.sort(key=lambda entry: (entry['score'], entry['case_id']), reverse=True)
+
+    open_matches = []
+    closed_matches = []
+    for entry in scored_matches:
+        is_closed = entry['close_date'] is not None
+        if is_closed:
+            closed_matches.append(entry)
+        else:
+            open_matches.append(entry)
+
+    if not include_closed:
+        closed_matches = []
+
+    result['open_case_matches'] = open_matches[:max_cases]
+    result['closed_case_matches'] = closed_matches[:max_cases]
+    result['has_open_match'] = len(result['open_case_matches']) > 0
+    result['has_closed_match'] = len(result['closed_case_matches']) > 0
+    return result
+
+
+def enrich_alert_with_closed_case_context(alert: Alert, closed_case_matches: list[dict]) -> None:
+    if not closed_case_matches:
+        return
+
+    existing_tags = [tag.strip() for tag in (alert.alert_tags or '').split(',') if tag.strip()]
+    if 'seen-in-closed-case' not in existing_tags:
+        existing_tags.append('seen-in-closed-case')
+        alert.alert_tags = ','.join(existing_tags)
+
+    alert_context = alert.alert_context or {}
+    existing_hits = alert_context.get('closed_case_hits', [])
+    existing_hit_keys = {
+        (hit.get('case_id'), hit.get('match_kind'), hit.get('match_value'), hit.get('match_type_id'))
+        for hit in existing_hits
+    }
+
+    for case_match in closed_case_matches:
+        for asset in case_match.get('matched_assets', []):
+            hit_key = (case_match.get('case_id'), 'asset', asset.get('asset_name'), asset.get('asset_type_id'))
+            if hit_key in existing_hit_keys:
+                continue
+            existing_hits.append({
+                'case_id': case_match.get('case_id'),
+                'case_name': case_match.get('case_name'),
+                'match_kind': 'asset',
+                'match_value': asset.get('asset_name'),
+                'match_type_id': asset.get('asset_type_id')
+            })
+            existing_hit_keys.add(hit_key)
+
+        for ioc in case_match.get('matched_iocs', []):
+            hit_key = (case_match.get('case_id'), 'ioc', ioc.get('ioc_value'), ioc.get('ioc_type_id'))
+            if hit_key in existing_hit_keys:
+                continue
+            existing_hits.append({
+                'case_id': case_match.get('case_id'),
+                'case_name': case_match.get('case_name'),
+                'match_kind': 'ioc',
+                'match_value': ioc.get('ioc_value'),
+                'match_type_id': ioc.get('ioc_type_id')
+            })
+            existing_hit_keys.add(hit_key)
+
+    alert_context['closed_case_hits'] = existing_hits
+    alert.alert_context = alert_context
+
+
+def get_connected_open_alert_ids(customer_id: int, entity: Dict[str, Any], max_alerts: int = 100) -> list[int]:
+    open_status_ids = _get_open_alerts_status_identifiers()
+    if not open_status_ids:
+        return []
+
+    query = db.session.query(Alert.alert_id).filter(
+        Alert.alert_customer_id == customer_id,
+        Alert.alert_status_id.in_(open_status_ids)
+    )
+
+    kind = entity.get('kind')
+    if kind == 'asset':
+        asset_name = entity.get('asset_name')
+        asset_type_id = entity.get('asset_type_id')
+        if not asset_name or asset_type_id is None:
+            return []
+        query = query.filter(Alert.assets.any(and_(
+            CaseAssets.asset_name == asset_name,
+            CaseAssets.asset_type_id == asset_type_id
+        )))
+    elif kind == 'ioc':
+        ioc_value = entity.get('ioc_value')
+        ioc_type_id = entity.get('ioc_type_id')
+        if not ioc_value or ioc_type_id is None:
+            return []
+        query = query.filter(Alert.iocs.any(and_(
+            Ioc.ioc_value == ioc_value,
+            Ioc.ioc_type_id == ioc_type_id
+        )))
+    else:
+        return []
+
+    connected_alerts = query.order_by(desc(Alert.alert_source_event_time)).limit(max_alerts).all()
+    return [alert_id for alert_id, in connected_alerts]
+
+
+def get_closed_case_context_for_entity(customer_id: int, entity: Dict[str, Any], max_cases: int = 20) -> list[dict]:
+    kind = entity.get('kind')
+    if kind == 'asset':
+        asset_name = entity.get('asset_name')
+        asset_type_id = entity.get('asset_type_id')
+        if not asset_name or asset_type_id is None:
+            return []
+
+        rows = (
+            db.session.query(Cases.case_id, Cases.name, CaseAssets.asset_name, CaseAssets.asset_type_id)
+            .join(CaseAssets, CaseAssets.case_id == Cases.case_id)
+            .filter(
+                Cases.client_id == customer_id,
+                Cases.close_date.isnot(None),
+                CaseAssets.asset_name == asset_name,
+                CaseAssets.asset_type_id == asset_type_id
+            )
+            .limit(max_cases)
+            .all()
+        )
+        return [{
+            'case_id': case_id,
+            'case_name': case_name,
+            'match_kind': 'asset',
+            'match_value': match_value,
+            'match_type_id': match_type_id
+        } for case_id, case_name, match_value, match_type_id in rows]
+
+    if kind == 'ioc':
+        ioc_value = entity.get('ioc_value')
+        ioc_type_id = entity.get('ioc_type_id')
+        if not ioc_value or ioc_type_id is None:
+            return []
+
+        rows = (
+            db.session.query(Cases.case_id, Cases.name, Ioc.ioc_value, Ioc.ioc_type_id)
+            .join(Ioc, Ioc.case_id == Cases.case_id)
+            .filter(
+                Cases.client_id == customer_id,
+                Cases.close_date.isnot(None),
+                Ioc.ioc_value == ioc_value,
+                Ioc.ioc_type_id == ioc_type_id
+            )
+            .limit(max_cases)
+            .all()
+        )
+        return [{
+            'case_id': case_id,
+            'case_name': case_name,
+            'match_kind': 'ioc',
+            'match_value': match_value,
+            'match_type_id': match_type_id
+        } for case_id, case_name, match_value, match_type_id in rows]
+
+    return []
 
 
 def get_alert_comments(alert_id: int) -> List[Comments]:

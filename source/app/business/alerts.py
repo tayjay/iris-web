@@ -19,6 +19,7 @@
 import json
 from datetime import datetime
 from typing import Optional
+from typing import Any
 
 from app.business.access_controls import access_controls_user_has_customer_access
 from app.db import db
@@ -35,10 +36,20 @@ from app.datamgmt.alerts.alerts_db import get_filtered_alerts
 from app.datamgmt.alerts.alerts_db import get_related_alerts_details
 from app.datamgmt.alerts.alerts_db import get_assets_with_cases
 from app.datamgmt.alerts.alerts_db import get_iocs_with_cases
+from app.datamgmt.alerts.alerts_db import get_alert_case_matches
+from app.datamgmt.alerts.alerts_db import enrich_alert_with_closed_case_context
+from app.datamgmt.alerts.alerts_db import get_connected_open_alert_ids
+from app.datamgmt.alerts.alerts_db import get_closed_case_context_for_entity
+from app.datamgmt.alerts.alerts_db import create_case_from_alerts
+from app.datamgmt.alerts.alerts_db import get_alert_status_by_name
+from app.datamgmt.alerts.alerts_db import merge_alert_in_case
+from app.datamgmt.alerts.alerts_db import _get_open_alerts_status_identifiers
+from app.datamgmt.manage.manage_access_control_db import check_ua_case_client
 from app.iris_engine.module_handler.module_handler import call_modules_hook
 from app.iris_engine.utils.tracker import track_activity
 from app.util import add_obj_history_entry
 from app.models.errors import ObjectNotFoundError
+from app.datamgmt.case.case_db import get_case
 
 
 def alerts_search(start_date, end_date, source_start_date, source_end_date, title, description,
@@ -86,6 +97,10 @@ def alerts_create(alert: Alert, iocs: list[Ioc], assets: list[CaseAssets]) -> Al
     add_obj_history_entry(alert, 'Alert created')
 
     cache_similar_alert(alert.alert_customer_id, assets, iocs, alert.alert_id, alert.alert_source_event_time)
+
+    correlation = get_alert_case_matches(alert, include_closed=True)
+    enrich_alert_with_closed_case_context(alert, correlation.get('closed_case_matches', []))
+    db.session.commit()
 
     alert = call_modules_hook('on_postload_alert_create', alert)
 
@@ -345,3 +360,160 @@ def alerts_delete(alert: Alert):
 
     call_modules_hook('on_postload_alert_delete', alert.alert_id)
     track_activity(f'delete alert #{alert.alert_id}', ctx_less=True)
+
+
+def alerts_get_case_correlation(alert: Alert, include_closed: bool = True, max_cases: int = 20) -> dict[str, Any]:
+    correlation = get_alert_case_matches(alert, include_closed=include_closed, max_cases=max_cases)
+    return correlation
+
+
+def alerts_get_unauthorized_case_ids(user_id: int, case_ids: list[int]) -> list[int]:
+    return [case_id for case_id in case_ids if not check_ua_case_client(user_id, case_id)]
+
+
+def alerts_merge_into_cases(alert: Alert, target_case_ids: list[int], import_as_event: bool = True,
+                            case_tags: str = '', note: str = '') -> dict[str, Any]:
+    correlation = get_alert_case_matches(alert, include_closed=False, max_cases=max(len(target_case_ids), 20))
+    open_case_matches = {match['case_id']: match for match in correlation.get('open_case_matches', [])}
+
+    alert_status_merged = get_alert_status_by_name('Merged')
+    if alert_status_merged is not None:
+        alert.alert_status_id = alert_status_merged.status_id
+
+    merged_case_ids = []
+    skipped = []
+
+    for case_id in target_case_ids:
+        case = get_case(case_id)
+        if not case:
+            skipped.append({'case_id': case_id, 'reason': 'case_not_found'})
+            continue
+
+        if case.close_date is not None:
+            skipped.append({'case_id': case_id, 'reason': 'case_closed'})
+            continue
+
+        if case.client_id != alert.alert_customer_id:
+            skipped.append({'case_id': case_id, 'reason': 'customer_mismatch'})
+            continue
+
+        case_match = open_case_matches.get(case_id)
+        if case_match is None:
+            skipped.append({'case_id': case_id, 'reason': 'no_entity_match'})
+            continue
+
+        matched_ioc_pairs = {(item['ioc_value'], item['ioc_type_id']) for item in case_match.get('matched_iocs', [])}
+        matched_asset_pairs = {(item['asset_name'], item['asset_type_id']) for item in case_match.get('matched_assets', [])}
+
+        ioc_uuid_list = [
+            str(ioc.ioc_uuid)
+            for ioc in alert.iocs
+            if (ioc.ioc_value, ioc.ioc_type_id) in matched_ioc_pairs
+        ]
+        asset_uuid_list = [
+            str(asset.asset_uuid)
+            for asset in alert.assets
+            if (asset.asset_name, asset.asset_type_id) in matched_asset_pairs
+        ]
+
+        merge_alert_in_case(
+            alert,
+            case,
+            iocs_list=ioc_uuid_list,
+            assets_list=asset_uuid_list,
+            note=note,
+            import_as_event=import_as_event,
+            case_tags=case_tags
+        )
+        merged_case_ids.append(case_id)
+
+    db.session.commit()
+    return {
+        'alert_id': alert.alert_id,
+        'merged_case_ids': merged_case_ids,
+        'skipped': skipped
+    }
+
+
+def alerts_get_connected_preview(customer_id: int, entity: dict, max_alerts: int = 100) -> dict[str, Any]:
+    connected_alert_ids = get_connected_open_alert_ids(customer_id, entity, max_alerts=max_alerts)
+    closed_context = get_closed_case_context_for_entity(customer_id, entity)
+    return {
+        'customer_id': customer_id,
+        'entity': entity,
+        'connected_alert_ids': connected_alert_ids,
+        'connected_alert_count': len(connected_alert_ids),
+        'closed_case_context': closed_context,
+        'truncated': len(connected_alert_ids) >= max_alerts
+    }
+
+
+def alerts_create_case_from_connected(customer_id: int, entity: dict, connected_alert_ids: list[int], case_title: str,
+                                      case_tags: str = '', import_as_event: bool = True) -> dict[str, Any]:
+    alert_status_merged = get_alert_status_by_name('Merged')
+    open_status_ids = set(_get_open_alerts_status_identifiers())
+    closed_context = get_closed_case_context_for_entity(customer_id, entity)
+    open_alerts = []
+    skipped_alerts = []
+
+    for alert_id in connected_alert_ids:
+        alert = get_alert_by_id(alert_id)
+        if not alert:
+            skipped_alerts.append({'alert_id': alert_id, 'reason': 'alert_not_found'})
+            continue
+        if alert.alert_customer_id != customer_id:
+            skipped_alerts.append({'alert_id': alert_id, 'reason': 'customer_mismatch'})
+            continue
+        if open_status_ids and alert.alert_status_id not in open_status_ids:
+            skipped_alerts.append({'alert_id': alert_id, 'reason': 'alert_not_open'})
+            continue
+        open_alerts.append(alert)
+
+    if not open_alerts:
+        return {
+            'case_id': None,
+            'merged_alert_ids': [],
+            'skipped_alerts': skipped_alerts,
+            'closed_case_context_applied': False
+        }
+
+    ioc_uuid_list = []
+    asset_uuid_list = []
+    for alert in open_alerts:
+        ioc_uuid_list.extend([str(ioc.ioc_uuid) for ioc in alert.iocs if ioc.ioc_uuid is not None])
+        asset_uuid_list.extend([str(asset.asset_uuid) for asset in alert.assets if asset.asset_uuid is not None])
+
+    created_case = create_case_from_alerts(
+        open_alerts,
+        iocs_list=list(set(ioc_uuid_list)),
+        assets_list=list(set(asset_uuid_list)),
+        case_title=case_title,
+        note='',
+        import_as_event=import_as_event,
+        case_tags=case_tags,
+        template_id=None
+    )
+
+    merged_alert_ids = []
+    for alert in open_alerts:
+        if alert_status_merged is not None:
+            alert.alert_status_id = alert_status_merged.status_id
+
+        if closed_context:
+            enrich_alert_with_closed_case_context(alert, [{
+                'case_id': entry.get('case_id'),
+                'case_name': entry.get('case_name'),
+                'matched_assets': [{'asset_name': entry.get('match_value'), 'asset_type_id': entry.get('match_type_id')}] if entry.get('match_kind') == 'asset' else [],
+                'matched_iocs': [{'ioc_value': entry.get('match_value'), 'ioc_type_id': entry.get('match_type_id')}] if entry.get('match_kind') == 'ioc' else []
+            } for entry in closed_context])
+
+        merged_alert_ids.append(alert.alert_id)
+
+    db.session.commit()
+
+    return {
+        'case_id': created_case.case_id,
+        'merged_alert_ids': merged_alert_ids,
+        'skipped_alerts': skipped_alerts,
+        'closed_case_context_applied': len(closed_context) > 0
+    }
