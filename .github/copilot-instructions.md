@@ -12,6 +12,11 @@
 - Frontend workflow in `ui`: `npm install`, `npm run watch`, `npm run build`, `npm run lint`.
 - End-to-end workflow in `e2e`: `npm run test` (full flow) or `npm run start` + `npm run e2e` + `npm run stop`.
 
+## API Reference
+- REST v2 endpoints are rooted at `/api/v2` via `source/app/blueprints/rest/api_v2_routes.py`, with per-domain handlers under `source/app/blueprints/rest/v2`.
+- Canonical API reference publishing is external: use the docs links in [README.md](../README.md) (`docs.dfir-iris.org` and the `iris-doc-src` repository) rather than embedding endpoint reference docs in this repository.
+- GraphQL reference in this repository is generated from `source/spectaql/config.yml` (CI uses `npx spectaql@^3.0.2 source/spectaql/config.yml`).
+
 ## Conventions
 - Link to canonical docs instead of duplicating policy: [README.md](../README.md), [architecture.md](../architecture.md), [CODESTYLE.md](../CODESTYLE.md), [CONFIGURATION.md](../CONFIGURATION.md), [CONTRIBUTING.md](../CONTRIBUTING.md).
 - Repo-specific Python conventions: prefer f-strings, one import per line, `_`-prefixed private names, minimal `__init__.py` files, and module-prefixed function names (for example `assets_create`).

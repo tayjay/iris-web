@@ -39,6 +39,8 @@ from app.blueprints.rest.v2.case_routes.iocs import case_iocs_blueprint
 from app.blueprints.rest.v2.case_routes.notes import case_notes_blueprint
 from app.blueprints.rest.v2.case_routes.notes_directories import case_notes_directories_blueprint
 from app.blueprints.rest.v2.case_routes.tasks import case_tasks_blueprint
+from app.blueprints.rest.v2.case_routes.emails import case_emails_blueprint
+from app.blueprints.rest.v2.case_routes.emails import case_task_emails_blueprint
 from app.blueprints.rest.v2.case_routes.evidences import case_evidences_blueprint
 from app.blueprints.rest.v2.case_routes.events import case_events_blueprint
 from app.blueprints.iris_user import iris_current_user
@@ -323,6 +325,8 @@ cases_blueprint.register_blueprint(case_iocs_blueprint)
 cases_blueprint.register_blueprint(case_notes_directories_blueprint)
 cases_blueprint.register_blueprint(case_notes_blueprint)
 cases_blueprint.register_blueprint(case_tasks_blueprint)
+cases_blueprint.register_blueprint(case_emails_blueprint)
+cases_blueprint.register_blueprint(case_task_emails_blueprint)
 cases_blueprint.register_blueprint(case_evidences_blueprint)
 cases_blueprint.register_blueprint(case_events_blueprint)
 

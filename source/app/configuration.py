@@ -349,6 +349,41 @@ class Config:
     AUTHENTICATION_LOCAL_FALLBACK = config.load('IRIS', 'AUTHENTICATION_LOCAL_FALLBACK', fallback="True") == "True"
     CASE_INSENSITIVE_ENTITY_MATCHING = config.load('IRIS', 'CASE_INSENSITIVE_ENTITY_MATCHING', fallback='False') == 'True'
 
+    # Email sending configuration (prepared for provider-based wiring).
+    EMAIL_PROVIDER = config.load('EMAIL', 'PROVIDER', fallback='smtp')
+    EMAIL_DEFAULT_SENDER = config.load('EMAIL', 'DEFAULT_SENDER', fallback='')
+    EMAIL_DEFAULT_REPLY_TO = config.load('EMAIL', 'DEFAULT_REPLY_TO', fallback='')
+    EMAIL_SEND_TIMEOUT_SECONDS = int(config.load('EMAIL', 'SEND_TIMEOUT_SECONDS', fallback=15))
+    EMAIL_MAX_RECIPIENTS = int(config.load('EMAIL', 'MAX_RECIPIENTS', fallback=100))
+    EMAIL_ALLOW_INSECURE_TLS = config.load('EMAIL', 'ALLOW_INSECURE_TLS', fallback='False') == 'True'
+    EMAIL_TEMPLATE_ROOT = config.load('EMAIL', 'TEMPLATE_ROOT', fallback='email')
+
+    EMAIL_SMTP_HOST = config.load('EMAIL', 'SMTP_HOST', fallback='')
+    EMAIL_SMTP_PORT = int(config.load('EMAIL', 'SMTP_PORT', fallback=587))
+    EMAIL_SMTP_STARTTLS = config.load('EMAIL', 'SMTP_STARTTLS', fallback='True') == 'True'
+    EMAIL_SMTP_USE_SSL = config.load('EMAIL', 'SMTP_USE_SSL', fallback='False') == 'True'
+    EMAIL_SMTP_USERNAME = config.load('EMAIL', 'SMTP_USERNAME', fallback='')
+    EMAIL_SMTP_PASSWORD = config.load('EMAIL', 'SMTP_PASSWORD', fallback='')
+    EMAIL_SMTP_FROM = config.load('EMAIL', 'SMTP_FROM', fallback='')
+
+    EMAIL_GRAPH_TENANT_ID = config.load('EMAIL', 'GRAPH_TENANT_ID', fallback='')
+    EMAIL_GRAPH_CLIENT_ID = config.load('EMAIL', 'GRAPH_CLIENT_ID', fallback='')
+    EMAIL_GRAPH_CLIENT_SECRET = config.load('EMAIL', 'GRAPH_CLIENT_SECRET', fallback='')
+    EMAIL_GRAPH_SENDER_MAILBOX = config.load('EMAIL', 'GRAPH_SENDER_MAILBOX', fallback='')
+    EMAIL_GRAPH_SCOPE = config.load('EMAIL', 'GRAPH_SCOPE', fallback='https://graph.microsoft.com/.default')
+
+    # Email ingestion configuration (prepared for case update / alert creation wiring).
+    EMAIL_INGESTION_ENABLED = config.load('EMAIL', 'INGESTION_ENABLED', fallback='False') == 'True'
+    EMAIL_INGESTION_PROVIDER = config.load('EMAIL', 'INGESTION_PROVIDER', fallback='imap')
+    EMAIL_INGESTION_IMAP_HOST = config.load('EMAIL', 'INGESTION_IMAP_HOST', fallback='')
+    EMAIL_INGESTION_IMAP_PORT = int(config.load('EMAIL', 'INGESTION_IMAP_PORT', fallback=993))
+    EMAIL_INGESTION_IMAP_USE_SSL = config.load('EMAIL', 'INGESTION_IMAP_USE_SSL', fallback='True') == 'True'
+    EMAIL_INGESTION_IMAP_USERNAME = config.load('EMAIL', 'INGESTION_IMAP_USERNAME', fallback='')
+    EMAIL_INGESTION_IMAP_PASSWORD = config.load('EMAIL', 'INGESTION_IMAP_PASSWORD', fallback='')
+    EMAIL_INGESTION_IMAP_FOLDER = config.load('EMAIL', 'INGESTION_IMAP_FOLDER', fallback='INBOX')
+    EMAIL_INGESTION_GRAPH_SUBSCRIPTION_ID = config.load('EMAIL', 'INGESTION_GRAPH_SUBSCRIPTION_ID', fallback='')
+    EMAIL_INGESTION_GRAPH_CLIENT_STATE = config.load('EMAIL', 'INGESTION_GRAPH_CLIENT_STATE', fallback='')
+
     if authentication_type == 'oidc_proxy':
         AUTHENTICATION_LOGOUT_URL = authentication_logout_url
         AUTHENTICATION_ACCOUNT_SERVICE_URL = authentication_account_service_url
